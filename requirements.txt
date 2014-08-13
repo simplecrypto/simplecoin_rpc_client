@@ -1,0 +1,9 @@
+git+https://github.com/icook/python-bitcoinrpc.git
+git+https://github.com/icook/cryptokit
+PyYAML==3.10
+SQLAlchemy==0.9.1
+itsdangerous==0.24
+requests==2.2.1
+apscheduler
+setproctitle
+decorator
