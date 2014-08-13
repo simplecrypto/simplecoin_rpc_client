@@ -3,31 +3,15 @@ import logging
 import sys
 import argparse
 import time
-import json
-import six
 import requests
+import decimal
 
 from urlparse import urljoin
 from cryptokit.base58 import get_bcaddress_version
-from flask import current_app
 from itsdangerous import TimedSerializer, BadData
 
 from bitcoinrpc.authproxy import JSONRPCException, CoinRPCException
 from .coinserv_cmds import payout_many
-from . import create_app, coinserv, merge_coinserv
-
-
-logger = logging.getLogger("toroidal")
-ch = logging.StreamHandler(sys.stdout)
-formatter = logging.Formatter('[%(levelname)s] %(message)s')
-ch.setFormatter(formatter)
-logger.addHandler(ch)
-
-hdlr = logging.FileHandler('rpc.log')
-formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-hdlr.setFormatter(formatter)
-logger.addHandler(hdlr)
-logger.setLevel(logging.DEBUG)
 
 
 class RPCException(Exception):
@@ -35,15 +19,50 @@ class RPCException(Exception):
 
 
 class RPCClient(object):
-    def __init__(self, config_path='/config.yml', root_suffix='/../',
-                 max_age=10):
-        self.root = os.path.abspath(os.path.dirname(__file__) + root_suffix)
-        self.config = current_app.config
-        del current_app.logger.handlers[0]
-        current_app.logger.addHandler(ch)
+    def _set_config(self, **kwargs):
+        # A fast way to set defaults for the kwargs then set them as attributes
+        self.config = dict(coinservs=None,
+                           valid_address_versions=[],
+                           max_age=10,
+                           rpc_signature=None,
+                           logger_name="rpc",
+                           log_path=os.path.abspath(os.path.dirname(__file__) + '/../') + '/rpc.log')
+        self.config.update(kwargs)
+
+        # check that we have at least one configured coin server
+        if not self.config['coinservs']:
+            self.logger.error("Shit won't work without a coinserver to connect to")
+            exit(1)
+
+        if not self.config['valid_address_versions']:
+            self.logger.error("We need address versions to validate payout amounts")
+            exit(1)
+
+        if not self.config['rpc_signature']:
+            self.logger.error("Can't send/recieve rpc commands without a rpc_signature config value")
+            exit(1)
+
+    def __init__(self, config):
+        self._set_config(config)
+
+        self.logger = logging.getLogger(self.config['logger_name'])
+        self.logger.setLevel(getattr(logging, self.config['log_level']))
+        log_format = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+
+        # stdout handler
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(log_format)
+        handler.setLevel(getattr(logging, self.config['log_level']))
+        self.logger.addHandler(handler)
+
+        # don't attach a file handler if path evals false
+        if self.config['log_path']:
+            handler = logging.FileHandler(self.config['log_path'])
+            handler.setFormatter(log_format)
+            handler.setLevel(getattr(logging, self.config['log_level']))
+            self.logger.addHandler(handler)
 
         self.serializer = TimedSerializer(self.config['rpc_signature'])
-        self.max_age = max_age
 
     def post(self, url, *args, **kwargs):
         if 'data' not in kwargs:
@@ -56,19 +75,19 @@ class RPCClient(object):
 
     def remote(self, url, method, max_age=None, signed=True, **kwargs):
         url = urljoin(self.config['rpc_url'], url)
-        logger.debug("Making request to {}".format(url))
+        self.logger.debug("Making request to {}".format(url))
         ret = getattr(requests, method)(url, timeout=270, **kwargs)
         if ret.status_code != 200:
             raise RPCException("Non 200 from remote: {}".format(ret.text))
 
         try:
-            logger.debug("Got {} from remote".format(ret.text.encode('utf8')))
+            self.logger.debug("Got {} from remote".format(ret.text.encode('utf8')))
             if signed:
                 return self.serializer.loads(ret.text, max_age or self.max_age)
             else:
                 return ret.json()
         except BadData:
-            current_app.logger.error("Invalid data returned from remote!", exc_info=True)
+            self.logger.error("Invalid data returned from remote!", exc_info=True)
             raise RPCException("Invalid signature")
 
     def poke_rpc(self, conn):
@@ -78,227 +97,207 @@ class RPCClient(object):
             raise RPCException("Coinserver not awake")
 
     def confirm_trans(self, simulate=False):
-        res = self.get('api/transaction?__filter_by={"confirmed":false}', signed=False)
+        """ Grabs the unconfirmed transactions objects from the remote server
+        and checks if they're confirmed. Also grabs and pushes the fees for the
+        transaction if remote server supports it. """
+        self.poke_rpc(self.coinserv)
+
+        res = self.get('api/transaction?__filter_by={{"confirmed":false,"merged_type":{}}}'
+                       .format(self.config['currency_code']), signed=False)
+
         if not res['success']:
-            logger.error("Failure from remote: {}".format(res))
+            self.logger.error("Failure grabbing unconfirmed transactions: {}".format(res))
             return
 
         tids = []
+        fees = {}
         for obj in res['objects']:
-            if obj['merged_type']:
-                conn = merge_coinserv[obj['merged_type']]
-                confirms = current_app.config['merged_cfg'][obj['merged_type']]['trans_confirmations']
-            else:
-                conn = coinserv
-                confirms = current_app.config['trans_confirmations']
-            logger.debug("Connecting to {} coinserv to lookup confirms for {}"
-                         .format(obj['merged_type'] or 'main', obj['txid']))
+            self.logger.debug("Connecting to coinserv to lookup confirms for {}"
+                              .format(obj['txid']))
             try:
-                res = conn.gettransaction(obj['txid'])
+                trans_data = self.coinserv.gettransaction(obj['txid'])
             except CoinRPCException:
-                logger.error("Unable to fetch txid {} from {} rpc server!"
-                             .format(obj['txid'], obj['merged_type']))
+                self.logger.error("Unable to fetch txid {} from rpc server!"
+                                  .format(obj['txid']))
             except Exception:
-                logger.error("Unable to fetch txid {} from {} rpc server!"
-                             .format(obj['txid'], obj['merged_type']), exc_info=True)
+                self.logger.error("Unable to fetch txid {} from rpc server!"
+                                  .format(obj['txid']), exc_info=True)
             else:
-                if res['confirmations'] > confirms:
+                if trans_data['confirmations'] > self.config['trans_confirmations']:
                     tids.append(obj['txid'])
-                    logger.info("Confirmed txid {} with {} confirms"
-                                .format(obj['txid'], res['confirmations']))
+                    self.logger.info("Confirmed txid {} with {} confirms"
+                                     .format(obj['txid'], trans_data['confirmations']))
 
-        data = {'tids': tids}
-        self.post('confirm_transactions', data=data)
+                # grab and populate fee value if:
+                # 1. Key is present in json from remote api (reverse compat)
+                # 2. Key is not populated
+                # 3. We got back a valid fee value from the rpc server
+                if 'fee' in trans_data and not obj.get("fee") and 'fee' in obj:
+                    assert isinstance(trans_data['fee'], decimal.Decimal)
+                    fees[obj['txid']] = int(trans_data['fee'] * 100000000)
+                    self.logger.info("Pushing fee value {} for txid {}"
+                                     .format(trans_data['fee'], obj['txid']))
 
-    def reset_trans_file(self, fo, simulate=False):
-        vals = json.load(fo)
-        self.reset_trans(simulate=simulate, **vals)
+        if tids or fees:
+            data = {'tids': tids, 'fees': fees}
+            if self.post('confirm_transactions', data=data):
+                self.logger.info("Sucessfully confirmed transactions")  # XXX: Add number print outs
+                return True
 
-    def associate_trans_file(self, fo, simulate=False):
-        vals = json.load(fo)
-        self.associate_trans(simulate=simulate, **vals)
+            self.logger.error("Failed to push confirmation information")
+            return False
+        else:
+            self.logger.info("No valid transactions in need of fee value or confirmation")
 
-    def string_to_list(self, string):
-        return [int(i.strip()) for i in string.split(',')]
-
-    def reset_trans(self, pids, bids, simulate=False):
-        if isinstance(pids, basestring):
-            pids = self.string_to_list(pids)
-        if isinstance(bids, basestring):
-            bids = self.string_to_list(bids)
-
-        data = {'pids': pids, 'bids': bids, 'reset': True}
-        logger.info("Resetting {:,} bonus ids and {:,} payout ids."
-                    .format(len(bids), len(pids)))
+    def reset_trans(self, pids, simulate=False):
+        """ Resets a list of pids and bids """
+        data = {'pids': pids, 'reset': True}
+        self.logger.info("Resetting {:,} payout ids".format(len(pids)))
         if simulate:
-            logger.info("Just kidding, we're simulating... Exit.")
+            self.logger.info("Just kidding, we're simulating... Exit.")
             exit(0)
 
         self.post('update_payouts', data=data)
 
-    def associate_trans(self, pids, bids, transaction_id, merged, simulate=False):
-        if isinstance(pids, basestring):
-            pids = self.string_to_list(pids)
-        if isinstance(bids, basestring):
-            bids = self.string_to_list(bids)
-        data = {'coin_txid': transaction_id, 'pids': pids, 'bids': bids, 'merged': merged}
-        logger.info("Associating {:,} payout ids and {:,} bonus ids with txid {}"
-                    .format(len(pids), len(bids), transaction_id))
+    def associate_trans(self, pids, transaction_id, simulate=False):
+        data = {'coin_txid': transaction_id, 'pids': pids, 'merged': self.config['currency_code']}
+        self.logger.info("Associating {:,} payout ids and with txid {}"
+                         .format(len(pids), transaction_id))
 
         if simulate:
-            logger.info("Just kidding, we're simulating... Exit.")
+            self.logger.info("Just kidding, we're simulating... Exit.")
             exit(0)
 
         if self.post('update_payouts', data=data):
-            logger.info("Sucessfully associated!")
+            self.logger.info("Sucessfully associated!")
             return True
-        logger.info("Failed to associate!")
+
+        self.logger.error("Failed to associate!")
         return False
 
-    def proc_trans(self, simulate=False, merged=None, datadir=None):
-        logger.info("Running payouts for merged = {}".format(merged))
-        if merged:
-            conn = merge_coinserv[merged]
-            valid_address_versions = current_app.config['merged_cfg'][merged]['address_version']
-        else:
-            conn = coinserv
-            valid_address_versions = current_app.config['address_version']
-        self.poke_rpc(conn)
-
-        lock = True
-        if simulate:
-            lock = False
-
+    def pull_payouts(self, simulate=False, datadir=None):
+        """ Gets all the unpaid payouts from the server """
+        lock = not simulate
         payouts, bonus_payouts, lock_res = self.post(
             'get_payouts',
-            data={'lock': lock, 'merged': merged}
+            data={'lock': lock, 'merged': self.config['currency_code']}
         )
         if lock:
             assert lock_res
 
         pids = [t[2] for t in payouts]
-        bids = [t[2] for t in bonus_payouts]
 
-        if not len(pids) and not len(bids):
-            logger.info("No payouts to process..")
-            return
+        if not len(pids):
+            self.logger.info("No payouts to process.. End proc_trans")
+            return True
 
         if not simulate:
-            backup_fname = os.path.join(os.path.abspath(datadir),
-                                        'locked_ids.{}'.format(int(time.time())))
-            fo = open(backup_fname, 'w')
-            json.dump(dict(pids=pids, bids=bids), fo)
-            fo.close()
-            logger.info("Locked pid information stored at {0}. Call sc_rpc "
-                        "reset_trans_file {0} to reset these transactions"
-                        .format(backup_fname))
+            # XXX: Insert into SQLAlchemy the payout information. Filter invalid addresses
+            #if get_bcaddress_version(payout.user) in self.config['valid_address_versions']:
+            #    pass
+            pass
 
-        logger.info("Recieved {:,} payouts and {:,} bonus payouts from the server"
-                    .format(len(pids), len(bids)))
+        self.logger.info("Recieved {:,} payouts from the server".format(len(pids)))
+
+    def payout(self, simulate=False):
+        """ Collects all the unpaid payout ids and pays them out """
+        self.poke_rpc(self.coinserv)
+
+        # XXX: Grab all the unpaid from db
+        payouts = []
 
         # builds two dictionaries, one that tracks the total payouts to a user,
-        # and another that tracks all the payout ids (pids) giving that amount
-        # to the user
-        totals = {}
-        pids = {}
-        bids = {}
-        for user, amount, id in payouts:
-            if get_bcaddress_version(user) in valid_address_versions:
-                totals.setdefault(user, 0)
-                totals[user] += amount
-                pids.setdefault(user, [])
-                pids[user].append(id)
-            else:
-                logger.warn("User {} has been excluded due to invalid address"
-                            .format(user))
+        # and another that tracks all the payout ids (pids)
+        user_payout_amounts = {}
+        pids = []
+        for payout in payouts:
+            user_payout_amounts.setdefault(payout.user, 0)
+            user_payout_amounts[payout.user] += payout.amount
+            payout.locked = True
+            pids.append(payout.pid)
 
-        for user, amount, id in bonus_payouts:
-            if get_bcaddress_version(user) in valid_address_versions:
-                totals.setdefault(user, 0)
-                totals[user] += amount
-                bids.setdefault(user, [])
-                bids[user].append(id)
-            else:
-                logger.warn("User {} has been excluded due to invalid address"
-                            .format(user))
+        # XXX: Perform a complete filesync of the lock state commit here!
+        total_out = sum(user_payout_amounts.values())
+        self.logger.info("Trying to payout a total of {}"
+                         .format(total_out))
 
-        # identify the users who meet minimum payout and format for sending
-        # to rpc
-        users = {user: amount / float(100000000) for user, amount in totals.iteritems()
-                 if amount > current_app.config['minimum_payout']}
-        logger.info("Trying to payout a total of {}".format(sum(users.values())))
+        if not simulate:
+            # XXX: Check current wallet balance and stop if needed. Record balance
+            pass
 
-        if len(users) == 0:
-            logger.info("Nobody has a big enough balance to pay out...")
-            return
+        self.logger.info("To be paid")
+        self.logger.info(user_payout_amounts)
 
-        # now we have all the users who we're going to send money. build a list
-        # of the pids that will be being paid in this transaction
-        committed_pids = []
-        for user in users:
-            committed_pids.extend(pids.get(user, []))
-        committed_bids = []
-        for user in users:
-            committed_bids.extend(bids.get(user, []))
-
-        logger.info("Total user payouts")
-        logger.info(users)
-
-        logger.debug("Total bonus IDs")
-        logger.debug(bids)
-        logger.debug("Total payout IDs")
-        logger.debug(pids)
-
-        logger.info("List of payout ids to be committed")
-        logger.info(committed_pids)
-        logger.info("List of bonus payout ids to be committed")
-        logger.info(committed_bids)
+        self.logger.info("List of payout ids to be committed")
+        self.logger.info(pids)
 
         if simulate:
-            logger.info("Just kidding, we're simulating... Exit.")
+            self.logger.info("Just kidding, we're simulating... Exit.")
             exit(0)
 
         try:
             # now actually pay them
-            coin_txid = payout_many(users, merged=merged)
+            coin_txid = payout_many(user_payout_amounts)
             #coin_txid = "1111111111111111111111111111111111111111111111111111111111111111"
         except CoinRPCException as e:
             if isinstance(e.error, dict) and e.error.get('message') == 'Insufficient funds':
-                logger.error("Insufficient funds, reseting...")
-                self.reset_trans(pids, bids)
+                self.logger.error("Insufficient funds, reseting...")
+                self.reset_trans(pids)
             else:
-                logger.error("Unkown RPC error, you'll need to manually reset the payouts", exc_info=True)
-
+                self.logger.error("Unkown RPC error, you'll need to manually reset the payouts", exc_info=True)
+            # XXX: Raise exception
         else:
-            associated = False
-            try:
-                logger.info("Got {} as txid for payout, now pushing result to server!"
-                            .format(coin_txid))
+            for payout in payouts:
+                payout.locked = False
+                payout.txid = coin_txid
 
-                retries = 0
-                while retries < 5:
-                    try:
-                        if self.associate_trans(committed_pids, committed_bids, coin_txid, merged=merged):
-                            logger.info("Recieved success response from the server.")
-                            associated = True
-                            break
-                    except Exception:
-                        logger.error("Server returned failure response, retrying "
-                                     "{} more times.".format(4 - retries), exc_info=True)
-                    retries += 1
-                    time.sleep(15)
-            finally:
-                if not associated:
-                    backup_fname = os.path.join(os.path.abspath(datadir),
-                                                'associated_ids.{}'.format(int(time.time())))
-                    fo = open(backup_fname, 'w')
-                    json.dump(dict(pids=committed_pids,
-                                   bids=committed_bids,
-                                   transaction_id=coin_txid,
-                                   merged=merged), fo)
-                    fo.close()
-                    logger.info("Failed transaction_id association data stored in {0}. Call sc_rpc "
-                                "associate_trans_file {0} to retry manually".format(backup_fname))
+            return coin_txid
+
+    def associate_all(self, simulate=False):
+        # XXX: Grab all the unassciated payouts from SQLALCHEMY
+        payouts = []
+        txids = {}
+        for payout in payouts:
+            txids.setdefault(payout.txid, [])
+            txids[payout.txid].append(payout)
+
+        # XXX: Consider scheduling these as tasks?
+        for txid, payouts in txids.iteritems():
+            self.associate(txid, payouts, simulate=simulate)
+
+    def associate(self, txid, payouts, simulate=False):
+        pids = [p.pid for p in payouts]
+        self.logger.info("Got {} as txid for payout, now pushing result to server!"
+                         .format(txid))
+
+        retries = 0
+        while retries < 5:
+            try:
+                if self.associate_trans(pids, txid, merged=self.config['currency_code']):
+                    self.logger.info("Recieved success response from the server.")
+                    for payout in self.payouts:
+                        payout.associated = True
+                        self.db.session.commit()
+                    break
+            except Exception:
+                self.logger.error("Server returned failure response, retrying "
+                                  "{} more times.".format(4 - retries), exc_info=True)
+            retries += 1
+            time.sleep(15)
+
+    def payout_many(self, recip):
+        self.coinserv = self.coinserv
+        fee = self.config['payout_fee']
+        passphrase = self.config['coinserv']['wallet_pass']
+        account = self.config['coinserv']['account']
+
+        if passphrase:
+            wallet = self.coinserv.walletpassphrase(passphrase, 10)
+            self.logger.info("Unlocking wallet: %s" % wallet)
+        self.logger.info("Setting tx fee: %s" % self.coinserv.settxfee(fee))
+        self.logger.info("Sending to recip: " + str(recip))
+        self.logger.info("Sending from account: " + str(account))
+        return self.coinserv.sendmany(account, recip)
 
 
 def entry():
@@ -344,15 +343,13 @@ def entry():
     global_args = ['log_level', 'action']
     # subcommand functions shouldn't recieve arguments directed at the
     # global object/ configs
-    kwargs = {k: v for k, v in six.iteritems(vars(args)) if k not in global_args}
+    kwargs = {k: v for k, v in vars(args).iteritems() if k not in global_args}
 
-    app = create_app()
-    with app.app_context():
-        interface = RPCClient()
-        try:
-            getattr(interface, args.action)(**kwargs)
-        except requests.exceptions.ConnectionError:
-            logger.error("Couldn't connect to remote server", exc_info=True)
-        except JSONRPCException as e:
-            logger.error("Recieved exception from rpc server: {}"
-                         .format(getattr(e, 'error')))
+    interface = RPCClient()
+    try:
+        getattr(interface, args.action)(**kwargs)
+    except requests.exceptions.ConnectionError:
+        logger.error("Couldn't connect to remote server", exc_info=True)
+    except JSONRPCException as e:
+        logger.error("Recieved exception from rpc server: {}"
+                        .format(getattr(e, 'error')))
