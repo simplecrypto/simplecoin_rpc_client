@@ -1,12 +1,14 @@
 import yaml
+import time
 import os
 import logging
 import sys
 import argparse
-import time
+import datetime
 import requests
 import decimal
 
+from tabulate import tabulate
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import sqlalchemy as sa
@@ -26,12 +28,31 @@ class Payout(base):
     payouts and keeps track of tasks that needs to be retried, etc. """
     __tablename__ = "payouts"
     id = sa.Column(sa.Integer, primary_key=True)
-    pid = sa.Column(sa.String, unique=True)
-    user = sa.Column(sa.String)
-    amount = sa.Column(sa.BigInteger())
+    pid = sa.Column(sa.String, unique=True, nullable=False)
+    user = sa.Column(sa.String, nullable=False)
+    amount = sa.Column(sa.BigInteger(), nullable=False)
     txid = sa.Column(sa.String)
-    associated = sa.Column(sa.Boolean, default=False)
-    locked = sa.Column(sa.Boolean, default=False)
+    associated = sa.Column(sa.Boolean, default=False, nullable=False)
+    locked = sa.Column(sa.Boolean, default=False, nullable=False)
+
+    # Times
+    lock_time = sa.Column(sa.DateTime)
+    paid_time = sa.Column(sa.DateTime)
+    assoc_time = sa.Column(sa.DateTime)
+    pull_time = sa.Column(sa.DateTime)
+
+    @property
+    def trans_id(self):
+        if self.txid is None:
+            return "NULL"
+        return self.txid
+
+    @property
+    def amount_float(self):
+        return self.amount / 100000000
+
+    def tabulize(self, columns):
+        return [getattr(self, a) for a in columns]
 
 
 class RPCException(Exception):
@@ -78,13 +99,29 @@ class RPCClient(object):
                     pool_kwargs=dict(maxsize=self.config.get('maxsize', 10))))
 
         # Setup the sqlite database mapper
-        engine = sa.create_engine('sqlite:///{}'.format(self.config['database_path']))
+        engine = sa.create_engine('sqlite:///{}'.format(self.config['database_path']), echo=self.config['log_level'] == "DEBUG")
+
+        # Pulled from SQLA docs to implement strict exclusive access to the
+        # payout state database.
+        # See http://docs.sqlalchemy.org/en/rel_0_9/dialects/sqlite.html#pysqlite-serializable
+        @sa.event.listens_for(engine, "connect")
+        def do_connect(dbapi_connection, connection_record):
+            # disable pysqlite's emitting of the BEGIN statement entirely.
+            # also stops it from emitting COMMIT before any DDL.
+            dbapi_connection.isolation_level = None
+
+        @sa.event.listens_for(engine, "begin")
+        def do_begin(conn):
+            # emit our own BEGIN
+            conn.execute("BEGIN EXCLUSIVE")
+
         self.db = sessionmaker(bind=engine)
         self.db.session = self.db()
         # Create the table if it doesn't exist
         Payout.__table__.create(engine, checkfirst=True)
 
         # Setup logger for the class
+        logging.Formatter.converter = time.gmtime
         self.logger = logging.getLogger(self.config['logger_name'])
         self.logger.setLevel(getattr(logging, self.config['log_level']))
         log_format = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
@@ -108,7 +145,7 @@ class RPCClient(object):
         if 'data' not in kwargs:
             kwargs['data'] = ''
         kwargs['data'] = self.serializer.dumps(kwargs['data'])
-        return self.remote(url, 'post', *args, **kwargs)
+        return self.remote('/rpc/' + url, 'post', *args, **kwargs)
 
     def get(self, url, *args, **kwargs):
         return self.remote(url, 'get', *args, **kwargs)
@@ -180,7 +217,8 @@ class RPCClient(object):
 
         if tids or fees:
             data = {'tids': tids, 'fees': fees}
-            if self.post('confirm_transactions', data=data):
+            res = self.post('confirm_transactions', data=data)
+            if res['result']:
                 self.logger.info("Sucessfully confirmed transactions")  # XXX: Add number print outs
                 return True
 
@@ -189,141 +227,213 @@ class RPCClient(object):
         else:
             self.logger.info("No valid transactions in need of fee value or confirmation")
 
-    def reset_trans(self, pids, simulate=False):
-        """ Resets a list of pids and bids """
-        data = {'pids': pids, 'reset': True}
-        self.logger.info("Resetting {:,} payout ids".format(len(pids)))
+    def reset_all_locked(self, simulate=False):
+        """ Resets all locked payouts """
+        payouts = self.db.session.query(Payout).filter_by(locked=True)
+        self.logger.info("Resetting {:,} payout ids".format(payouts.count()))
         if simulate:
             self.logger.info("Just kidding, we're simulating... Exit.")
             exit(0)
 
-        self.post('update_payouts', data=data)
-
-    def associate_trans(self, pids, transaction_id, simulate=False):
-        data = {'coin_txid': transaction_id, 'pids': pids, 'merged': self.config['currency_code']}
-        self.logger.info("Associating {:,} payout ids and with txid {}"
-                         .format(len(pids), transaction_id))
-
-        if simulate:
-            self.logger.info("Just kidding, we're simulating... Exit.")
-            exit(0)
-
-        if self.post('update_payouts', data=data):
-            self.logger.info("Sucessfully associated!")
-            return True
-
-        self.logger.error("Failed to associate!")
-        return False
+        payouts.update({Payout.locked: False})
+        self.db.session.commit()
 
     def pull_payouts(self, simulate=False):
         """ Gets all the unpaid payouts from the server """
         payouts = self.post(
             'get_payouts',
             data={'currency': self.config['currency_code']}
-        )
+        )['pids']
 
         repeat = 0
+        new = 0
+        invalid = 0
         if not simulate:
             for user, amount, pid in payouts:
                 if get_bcaddress_version(user) in self.config['valid_address_versions']:
                     if not self.db.session.query(Payout).filter_by(pid=pid).first():
-                        p = Payout(pid=pid, user=user, amount=amount)
+                        p = Payout(pid=pid, user=user, amount=amount, pull_time=datetime.datetime.utcnow())
                         self.db.session.add(p)
+                        new += 1
                     else:
                         repeat += 1
                 else:
                     self.logger.warn("Ignoring payout {} due to invalid address"
                                      .format((user, amount, pid)))
+                    invalid += 1
+
             self.db.session.commit()
 
-        self.logger.info("Recieved {:,} new payouts and {:,} old payouts from the server"
-                         .format(len(payouts) - repeat, repeat))
+        self.logger.info("Inserted {:,} new payouts and skipped {:,} old "
+                         "payouts from the server. {:,} payouts with invalid addresses."
+                         .format(new, repeat, invalid))
         return True
 
     def payout(self, simulate=False):
         """ Collects all the unpaid payout ids and pays them out """
         self.poke_rpc(self.coinserv)
 
-        payouts = self.db.session.query(Payout).filter_by(txid=None, locked=False)
+        # Grab all now so that we use the same list of payouts for both
+        # database transactions (locking, and unlocking)
+        payouts = self.db.session.query(Payout).filter_by(txid=None, locked=False).all()
+        if not payouts:
+            self.logger.info("No payouts to process, exiting")
+            return True
 
-        # builds two dictionaries, one that tracks the total payouts to a user,
-        # and another that tracks all the payout ids (pids)
+        # track the total payouts to each user
         user_payout_amounts = {}
-        pids = []
+        pids = {}
         for payout in payouts:
             user_payout_amounts.setdefault(payout.user, 0)
             user_payout_amounts[payout.user] += payout.amount
-            payout.locked = True
-            pids.append(payout.pid)
+            pids.setdefault(payout.user, [])
+            pids[payout.user].append(payout.pid)
 
-        # XXX: Perform a complete filesync of the lock state commit here!
+            # We'll lock the payout before continuing in case of a failure in
+            # between paying out and recording that payout action
+            payout.locked = True
+            payout.lock_time = datetime.datetime.utcnow()
+
         total_out = sum(user_payout_amounts.values())
-        self.logger.info("Trying to payout a total of {}"
-                         .format(total_out))
+        # Convert into satoshi
+        balance = int(self.coinserv.getbalance() * 100000000)
+        self.logger.info("Payout wallet balance: {:,}".format(balance / 100000000.0))
+        self.logger.info("Total to be paid {:,}".format(total_out / 100000000.0))
+
+        if balance < total_out:
+            self.logger.error("Payout wallet is out of funds!")
+            self.db.session.rollback()
+            # XXX: Add an email call here
+            return False
 
         if not simulate:
-            # XXX: Check current wallet balance and stop if needed. Record balance
-            pass
+            self.db.session.commit()
+        else:
+            self.db.session.rollback()
 
-        self.logger.info("To be paid")
-        self.logger.info(user_payout_amounts)
+        def format_pids(pids):
+            pids = [str(a) for a in xrange(100)]
+            lst = ", ".join(pids[:9])
+            if len(pids) > 9:
+                return lst + "... ({} more)".format(len(pids) - 8)
+            return lst
+        summary = [(user, amount / 100000000.0, format_pids(upids)) for
+                   (user, amount), upids in zip(user_payout_amounts.iteritems(), pids.itervalues())]
 
-        self.logger.info("List of payout ids to be committed")
-        self.logger.info(pids)
-
-        if simulate:
-            self.logger.info("Just kidding, we're simulating... Exit.")
-            exit(0)
+        self.logger.info(
+            "User payment summary\n" + tabulate(summary, headers=["User", "Total", "Pids"], tablefmt="grid"))
 
         try:
-            # now actually pay them
-            #coin_txid = payout_many(user_payout_amounts)
-            coin_txid = "1111111111111111111111111111111111111111111111111111111111111111"
-        except CoinRPCException as e:
-            if isinstance(e.error, dict) and e.error.get('message') == 'Insufficient funds':
-                self.logger.error("Insufficient funds, reseting...")
-                self.reset_trans(pids)
+            if simulate:
+                coin_txid = "1111111111111111111111111111111111111111111111111111111111111111"
+                res = raw_input("Would you like the simulation to associate a "
+                                "fake txid {} with these payouts? Don't do "
+                                "this on production. [y/n] ".format(coin_txid))
+                if res != "y":
+                    self.logger.info("Exiting")
+                    return True
             else:
-                self.logger.error("Unkown RPC error, you'll need to manually reset the payouts", exc_info=True)
-            # XXX: Raise exception
+                # now actually pay them
+                user_payout_amounts["test"] = 1.1
+                coin_txid = self.payout_many(user_payout_amounts)
+        except CoinRPCException:
+            new_balance = int(self.coinserv.getbalance() * 100000000)
+            if new_balance != balance:
+                self.logger.error(
+                    "RPC error occured and wallet balance changed! Keeping the "
+                    "payout entries locked. simplecoin_rpc dump_incomplete can "
+                    "show you the details of the locked entries. If you're SURE"
+                    "a double payout hasn't occured, use simplecoin_rpc "
+                    "reset_all_locked to reset the entries.", exc_info=True)
+                return False
+            else:
+                self.logger.error("RPC error occured and wallet balance didn't "
+                                  "change. Unlocking payouts.")
+                # Reset all the payouts so we can try again later
+                for payout in payouts:
+                    payout.locked = False
         else:
+            # Success! Now associate the txid and unlock to allow association
+            # with remote to occur
             for payout in payouts:
                 payout.locked = False
                 payout.txid = coin_txid
+                payout.paid_time = datetime.datetime.utcnow()
 
+            self.db.session.commit()
+            self.logger.info("Updated {:,} payouts with txid {}"
+                             .format(len(payouts), coin_txid))
             return coin_txid
 
+    def _tabulate(self, title, query, headers=None):
+        """ Displays a table of payouts given a query to fetch payouts with, a
+        title to label the table, and an optional list of columns to display
+        """
+        print("@@ {} @@".format(title))
+        headers = headers if headers else ["pid", "user", "amount_float", "associated", "locked", "trans_id"]
+        data = [p.tabulize(headers) for p in query]
+        if data:
+            print(tabulate(data, headers=headers, tablefmt="grid"))
+        else:
+            print("-- Nothing to display --")
+        print("")
+
+    def dump_incomplete(self, simulate=False, unpaid_locked=True, paid_unassoc=True, unpaid_unlocked=True):
+        """ Prints out a nice display of all incomplete payout records. """
+        if unpaid_locked:
+            self.unpaid_locked()
+        if paid_unassoc:
+            self.paid_unassoc()
+        if unpaid_unlocked:
+            self.unpaid_unlocked()
+
+    def unpaid_locked(self):
+        self._tabulate(
+            "Unpaid locked payouts",
+            self.db.session.query(Payout).filter_by(txid=None, locked=True))
+
+    def paid_unassoc(self):
+        self._tabulate(
+            "Paid un-associated payouts",
+            self.db.session.query(Payout).filter_by(associated=False).filter(Payout.txid != None))
+
+    def unpaid_unlocked(self):
+        self._tabulate(
+            "Payouts ready to payout",
+            self.db.session.query(Payout).filter_by(txid=None, locked=False))
+
     def associate_all(self, simulate=False):
-        # XXX: Grab all the unassciated payouts from SQLALCHEMY
-        payouts = []
         txids = {}
+        payouts = self.db.session.query(Payout).filter_by(associated=False).filter(Payout.txid != None)
         for payout in payouts:
             txids.setdefault(payout.txid, [])
             txids[payout.txid].append(payout)
 
-        # XXX: Consider scheduling these as tasks?
         for txid, payouts in txids.iteritems():
-            self.associate(txid, payouts, simulate=simulate)
+            if simulate:
+                self.logger.info("Would attempt remote association of {:,} ids "
+                                 "with txid {}".format(len(payouts), txid))
+            else:
+                self.associate(txid, payouts)
 
-    def associate(self, txid, payouts, simulate=False):
+    def associate(self, txid, payouts):
         pids = [p.pid for p in payouts]
-        self.logger.info("Got {} as txid for payout, now pushing result to server!"
-                         .format(txid))
+        self.logger.info("Trying to associate {:,} payouts with txid {} on remote"
+                         .format(len(payouts), txid))
 
-        retries = 0
-        while retries < 5:
-            try:
-                if self.associate_trans(pids, txid, merged=self.config['currency_code']):
-                    self.logger.info("Recieved success response from the server.")
-                    for payout in self.payouts:
-                        payout.associated = True
-                        self.db.session.commit()
-                    break
-            except Exception:
-                self.logger.error("Server returned failure response, retrying "
-                                  "{} more times.".format(4 - retries), exc_info=True)
-            retries += 1
-            time.sleep(15)
+        data = {'coin_txid': txid, 'pids': pids, 'currency': self.config['currency_code']}
+        self.logger.info("Associating {:,} payout ids and with txid {}"
+                         .format(len(pids), txid))
+
+        res = self.post('update_payouts', data=data)
+        if res['result']:
+            self.logger.info("Recieved success response from the server.")
+            for payout in payouts:
+                payout.associated = True
+                payout.assoc_time = datetime.datetime.utcnow()
+                self.db.session.commit()
+            return True
+        return False
 
     def payout_many(self, recip):
         self.coinserv = self.coinserv
@@ -360,6 +470,9 @@ def entry():
                           help='fetches unconfirmed transactions and tries to confirm them')
     subparsers.add_parser('payout', help='pays out all ready payout records')
     subparsers.add_parser('pull_payouts', help='pulls down new payouts that are ready from the server')
+    subparsers.add_parser('reset_all_locked', help='resets all locked payouts')
+    subparsers.add_parser('dump_incomplete', help='')
+    subparsers.add_parser('associate_all', help='')
 
     args = parser.parse_args()
 

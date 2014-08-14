@@ -7,3 +7,4 @@ requests==2.2.1
 apscheduler
 setproctitle
 decorator
+tabulate
