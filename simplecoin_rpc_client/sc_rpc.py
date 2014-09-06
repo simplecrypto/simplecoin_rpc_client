@@ -362,7 +362,7 @@ class SCRPCClient(object):
         transaction if remote server supports it. """
         self.coin_rpc.poke_rpc()
 
-        res = self.get('api/transaction?__filter_by={{"confirmed":false,"merged_type":{}}}'
+        res = self.get('api/transaction?__filter_by={{"confirmed":false,"currency":{}}}'
                        .format(self.config['currency_code']), signed=False)
 
         if not res['success']:
@@ -379,16 +379,6 @@ class SCRPCClient(object):
                 tids.append(sc_obj['txid'])
                 self.logger.info("Confirmed txid {} with {} confirms"
                                  .format(sc_obj['txid'], rpc_tx_obj.confirmations))
-
-            # # grab and populate fee value if:
-            # # 1. Key is present in json from remote api (reverse compat)
-            # # 2. Key is not populated
-            # # 3. We got back a valid fee value from the rpc server
-            # if 'fee' in trans_data and not obj.get("fee") and 'fee' in obj:
-            #     assert isinstance(trans_data['fee'], Dec)
-            #     fees[obj['txid']] = trans_data['fee']
-            #     self.logger.info("Pushing fee value {} for txid {}"
-            #                      .format(trans_data['fee'], obj['txid']))
 
         if tids:
             data = {'tids': tids}
