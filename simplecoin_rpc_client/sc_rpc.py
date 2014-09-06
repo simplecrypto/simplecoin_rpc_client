@@ -1,4 +1,4 @@
-from sc_trader.exceptions import CoinRPCException
+from sc_trader.utils.exceptions import CoinRPCException
 import yaml
 import time
 import os
@@ -29,7 +29,8 @@ class Payout(base):
     id = sa.Column(sa.Integer, primary_key=True)
     pid = sa.Column(sa.String, unique=True, nullable=False)
     user = sa.Column(sa.String, nullable=False)
-    amount = sa.Column(sa.Numeric(), nullable=False)
+    amount = sa.Column(sa.Numeric, nullable=False)
+    currency_code = sa.Column(sa.String, nullable=False)
     txid = sa.Column(sa.String)
     associated = sa.Column(sa.Boolean, default=False, nullable=False)
     locked = sa.Column(sa.Boolean, default=False, nullable=False)
@@ -201,7 +202,9 @@ class SCRPCClient(object):
                 repeat += 1
                 continue
             # Create local payout obj
-            p = Payout(pid=pid, user=user, amount=amount, pull_time=datetime.datetime.utcnow())
+            p = Payout(pid=pid, user=user, amount=amount,
+                       currency_code=self.config['currency_code'],
+                       pull_time=datetime.datetime.utcnow())
             new += 1
 
             if not simulate:
@@ -214,59 +217,18 @@ class SCRPCClient(object):
                          .format(new, repeat, invalid))
         return True
 
-    def confirm_trans(self, simulate=False):
-        """ Grabs the unconfirmed transactions objects from the remote server
-        and checks if they're confirmed. Also grabs and pushes the fees for the
-        transaction if remote server supports it. """
-        self.coin_rpc.poke_rpc()
-
-        res = self.get('api/transaction?__filter_by={{"confirmed":false,"merged_type":{}}}'
-                       .format(self.config['currency_code']), signed=False)
-
-        if not res['success']:
-            self.logger.error("Failure grabbing unconfirmed transactions: {}".format(res))
-            return
-
-        tids = []
-        for sc_obj in res['objects']:
-            self.logger.debug("Connecting to coinserv to lookup confirms for {}"
-                              .format(sc_obj['txid']))
-            rpc_tx_obj = self.coin_rpc.get_transaction(sc_obj['txid'])
-
-            if rpc_tx_obj.confirmations > self.config['min_tx_confirms']:
-                tids.append(sc_obj['txid'])
-                self.logger.info("Confirmed txid {} with {} confirms"
-                                 .format(sc_obj['txid'], rpc_tx_obj.confirmations))
-
-            # # grab and populate fee value if:
-            # # 1. Key is present in json from remote api (reverse compat)
-            # # 2. Key is not populated
-            # # 3. We got back a valid fee value from the rpc server
-            # if 'fee' in trans_data and not obj.get("fee") and 'fee' in obj:
-            #     assert isinstance(trans_data['fee'], Dec)
-            #     fees[obj['txid']] = trans_data['fee']
-            #     self.logger.info("Pushing fee value {} for txid {}"
-            #                      .format(trans_data['fee'], obj['txid']))
-
-        if tids:
-            data = {'tids': tids}
-            res = self.post('confirm_transactions', data=data)
-            if res['result']:
-                self.logger.info("Sucessfully confirmed transactions")  # XXX: Add number print outs
-                return True
-
-            self.logger.error("Failed to push confirmation information")
-            return False
-        else:
-            self.logger.info("No valid transactions in need of fee value or confirmation")
-
-    def payout(self, simulate=False):
+    def send_payout(self, simulate=False):
         """ Collects all the unpaid payout ids and pays them out """
         self.coin_rpc.poke_rpc()
 
         # Grab all payouts now so that we use the same list of payouts for both
         # database transactions (locking, and unlocking)
-        payouts = self.db.session.query(Payout).filter_by(txid=None, locked=False).all()
+        payouts = (self.db.session.query(Payout).
+                   filter_by(txid=None,
+                             locked=False,
+                             currency_code=self.config['currency_code'])
+                   .all())
+
         if not payouts:
             self.logger.info("No payouts to process, exiting")
             return True
@@ -390,6 +352,52 @@ class SCRPCClient(object):
             self.db.session.commit()
             return True
         return False
+
+    def confirm_trans(self, simulate=False):
+        """ Grabs the unconfirmed transactions objects from the remote server
+        and checks if they're confirmed. Also grabs and pushes the fees for the
+        transaction if remote server supports it. """
+        self.coin_rpc.poke_rpc()
+
+        res = self.get('api/transaction?__filter_by={{"confirmed":false,"merged_type":{}}}'
+                       .format(self.config['currency_code']), signed=False)
+
+        if not res['success']:
+            self.logger.error("Failure grabbing unconfirmed transactions: {}".format(res))
+            return
+
+        tids = []
+        for sc_obj in res['objects']:
+            self.logger.debug("Connecting to coinserv to lookup confirms for {}"
+                              .format(sc_obj['txid']))
+            rpc_tx_obj = self.coin_rpc.get_transaction(sc_obj['txid'])
+
+            if rpc_tx_obj.confirmations > self.config['min_tx_confirms']:
+                tids.append(sc_obj['txid'])
+                self.logger.info("Confirmed txid {} with {} confirms"
+                                 .format(sc_obj['txid'], rpc_tx_obj.confirmations))
+
+            # # grab and populate fee value if:
+            # # 1. Key is present in json from remote api (reverse compat)
+            # # 2. Key is not populated
+            # # 3. We got back a valid fee value from the rpc server
+            # if 'fee' in trans_data and not obj.get("fee") and 'fee' in obj:
+            #     assert isinstance(trans_data['fee'], Dec)
+            #     fees[obj['txid']] = trans_data['fee']
+            #     self.logger.info("Pushing fee value {} for txid {}"
+            #                      .format(trans_data['fee'], obj['txid']))
+
+        if tids:
+            data = {'tids': tids}
+            res = self.post('confirm_transactions', data=data)
+            if res['result']:
+                self.logger.info("Sucessfully confirmed transactions")  # XXX: Add number print outs
+                return True
+
+            self.logger.error("Failed to push confirmation information")
+            return False
+        else:
+            self.logger.info("No valid transactions in need of fee value or confirmation")
 
     ########################################################################
     # Helpful local data management + analysis methods
