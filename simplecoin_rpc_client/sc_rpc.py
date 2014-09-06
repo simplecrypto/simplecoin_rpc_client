@@ -317,7 +317,7 @@ class SCRPCClient(object):
             self.db.session.commit()
             self.logger.info("Updated {:,} payouts with txid {}"
                              .format(len(payouts), coin_txid))
-            return coin_txid, rpc_tx_obj
+            return coin_txid, rpc_tx_obj, payouts
 
     def associate_all(self, simulate=False):
         txids = {}
@@ -326,19 +326,22 @@ class SCRPCClient(object):
             txids.setdefault(payout.txid, [])
             txids[payout.txid].append(payout)
 
+        tx_fees = {txid: self.coin_rpc.get_transaction(txid)
+                   for txid in txids.iterkeys()}
+
         for txid, payouts in txids.iteritems():
             if simulate:
                 self.logger.info("Would attempt remote association of {:,} ids "
                                  "with txid {}".format(len(payouts), txid))
             else:
-                self.associate(txid, payouts)
+                self.associate(txid, payouts, tx_fees[txid])
 
-    def associate(self, txid, payouts):
+    def associate(self, txid, payouts, tx_fee):
         pids = [p.pid for p in payouts]
         self.logger.info("Trying to associate {:,} payouts with txid {} on remote"
                          .format(len(payouts), txid))
 
-        data = {'coin_txid': txid, 'pids': pids,
+        data = {'coin_txid': txid, 'pids': pids, 'tx_fee': tx_fee,
                 'currency': self.config['currency_code']}
         self.logger.info("Associating {:,} payout ids and with txid {}"
                          .format(len(pids), txid))
