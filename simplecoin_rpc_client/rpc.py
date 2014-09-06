@@ -81,12 +81,11 @@ class RPCClient(object):
                 error = True
 
         if error:
-            exit(1)
+            raise RPCException('Errors occurred while configuring RPCClient obj')
 
     def __init__(self, config):
         if not config:
-            print("Invalid configuration file")
-            exit(1)
+            raise RPCException('Invalid configuration file')
         self._set_config(**config)
 
         # setup our coinserver connection
@@ -99,7 +98,8 @@ class RPCClient(object):
                     pool_kwargs=dict(maxsize=self.config.get('maxsize', 10))))
 
         # Setup the sqlite database mapper
-        engine = sa.create_engine('sqlite:///{}'.format(self.config['database_path']), echo=self.config['log_level'] == "DEBUG")
+        engine = sa.create_engine('sqlite:///{}'.format(self.config['database_path']),
+                                  echo=self.config['log_level'] == "DEBUG")
 
         # Pulled from SQLA docs to implement strict exclusive access to the
         # payout state database.
@@ -233,7 +233,7 @@ class RPCClient(object):
         self.logger.info("Resetting {:,} payout ids".format(payouts.count()))
         if simulate:
             self.logger.info("Just kidding, we're simulating... Exit.")
-            exit(0)
+            return
 
         payouts.update({Payout.locked: False})
         self.db.session.commit()
@@ -248,21 +248,27 @@ class RPCClient(object):
         repeat = 0
         new = 0
         invalid = 0
-        if not simulate:
-            for user, amount, pid in payouts:
-                if get_bcaddress_version(user) in self.config['valid_address_versions']:
-                    if not self.db.session.query(Payout).filter_by(pid=pid).first():
-                        p = Payout(pid=pid, user=user, amount=amount, pull_time=datetime.datetime.utcnow())
-                        self.db.session.add(p)
-                        new += 1
-                    else:
-                        repeat += 1
-                else:
-                    self.logger.warn("Ignoring payout {} due to invalid address"
-                                     .format((user, amount, pid)))
-                    invalid += 1
+        for user, amount, pid in payouts:
+            # Check address is valid
+            if not get_bcaddress_version(user) in self.config['valid_address_versions']:
+                self.logger.warn("Ignoring payout {} due to invalid address"
+                                 .format((user, amount, pid)))
+                invalid += 1
+                continue
+            # Check payout doesn't already exist
+            if not self.db.session.query(Payout).filter_by(pid=pid).first():
+                self.logger.debug("Ignoring payout {} because it already exists"
+                                  " locally".format((user, amount, pid)))
+                repeat += 1
+                continue
+            # Create local payout obj
+            p = Payout(pid=pid, user=user, amount=amount, pull_time=datetime.datetime.utcnow())
+            new += 1
 
-            self.db.session.commit()
+            if not simulate:
+                self.db.session.add(p)
+
+        self.db.session.commit()
 
         self.logger.info("Inserted {:,} new payouts and skipped {:,} old "
                          "payouts from the server. {:,} payouts with invalid addresses."
@@ -273,7 +279,7 @@ class RPCClient(object):
         """ Collects all the unpaid payout ids and pays them out """
         self.poke_rpc(self.coinserv)
 
-        # Grab all now so that we use the same list of payouts for both
+        # Grab all payouts now so that we use the same list of payouts for both
         # database transactions (locking, and unlocking)
         payouts = self.db.session.query(Payout).filter_by(txid=None, locked=False).all()
         if not payouts:
@@ -312,7 +318,6 @@ class RPCClient(object):
             self.db.session.rollback()
 
         def format_pids(pids):
-            pids = [str(a) for a in xrange(100)]
             lst = ", ".join(pids[:9])
             if len(pids) > 9:
                 return lst + "... ({} more)".format(len(pids) - 8)
@@ -333,8 +338,7 @@ class RPCClient(object):
                     self.logger.info("Exiting")
                     return True
             else:
-                # now actually pay them
-                user_payout_amounts["test"] = 1.1
+                # finally run rpc call to payout
                 coin_txid = self.payout_many(user_payout_amounts)
         except CoinRPCException:
             new_balance = int(self.coinserv.getbalance() * 100000000)
@@ -352,6 +356,9 @@ class RPCClient(object):
                 # Reset all the payouts so we can try again later
                 for payout in payouts:
                     payout.locked = False
+
+                self.db.session.commit()
+                return False
         else:
             # Success! Now associate the txid and unlock to allow association
             # with remote to occur
@@ -421,13 +428,14 @@ class RPCClient(object):
         self.logger.info("Trying to associate {:,} payouts with txid {} on remote"
                          .format(len(payouts), txid))
 
-        data = {'coin_txid': txid, 'pids': pids, 'currency': self.config['currency_code']}
+        data = {'coin_txid': txid, 'pids': pids,
+                'currency': self.config['currency_code']}
         self.logger.info("Associating {:,} payout ids and with txid {}"
                          .format(len(pids), txid))
 
         res = self.post('update_payouts', data=data)
         if res['result']:
-            self.logger.info("Recieved success response from the server.")
+            self.logger.info("Received success response from the server.")
             for payout in payouts:
                 payout.associated = True
                 payout.assoc_time = datetime.datetime.utcnow()
@@ -436,7 +444,6 @@ class RPCClient(object):
         return False
 
     def payout_many(self, recip):
-        self.coinserv = self.coinserv
         fee = self.config['payout_fee']
         passphrase = self.config['coinserv']['wallet_pass']
         account = self.config['coinserv']['account']
