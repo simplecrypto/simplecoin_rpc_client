@@ -218,7 +218,8 @@ class SCRPCClient(object):
         return True
 
     def send_payout(self, simulate=False):
-        """ Collects all the unpaid payout ids and pays them out """
+        """ Collects all the unpaid payout ids (for the configured currency)
+        and pays them out """
         self.coin_rpc.poke_rpc()
 
         # Grab all payouts now so that we use the same list of payouts for both
@@ -372,7 +373,7 @@ class SCRPCClient(object):
             self.logger.info('We\'re simulating, so don\'t actually post to SC')
             return
 
-        res = self.post('update_payouts', data=data)
+        res = self.post('associate_payouts', data=data)
         if res['result']:
             self.logger.info("Received success response from the server.")
             for payout in payouts:
