@@ -320,23 +320,45 @@ class SCRPCClient(object):
             return coin_txid, rpc_tx_obj, payouts
 
     def associate_all(self, simulate=False):
+        """
+        Looks at all local Payout objects (of the currency_code) that are paid
+        and have a transaction id, and attempts to push that transaction ids
+        and fees to the SC Payout object
+        """
+        payouts = (self.db.session.query(Payout).
+                   filter_by(associated=False,
+                             currency_code=self.config['currency_code']).
+                   filter(Payout.txid != None)
+                   .all())
+
+        # Build a dict keyed by txid to track payouts.
         txids = {}
-        payouts = self.db.session.query(Payout).filter_by(associated=False).filter(Payout.txid != None)
         for payout in payouts:
             txids.setdefault(payout.txid, [])
             txids[payout.txid].append(payout)
 
-        tx_fees = {txid: self.coin_rpc.get_transaction(txid)
-                   for txid in txids.iterkeys()}
+        # Try to grab the fee for each txid
+        tx_fees = {}
+        for txid in txids.iterkeys():
+            try:
+                tx_fees[txid] = self.coin_rpc.get_transaction(txid)
+            except CoinRPCException as e:
+                self.logger.warn('Skipping transaction with id {}, failed '
+                                 'looking it up from the {} wallet'
+                                 .format(txid, self.config['currency_code']))
+                continue
 
         for txid, payouts in txids.iteritems():
             if simulate:
-                self.logger.info("Would attempt remote association of {:,} ids "
+                self.logger.info("Attempting remote association of {:,} ids "
                                  "with txid {}".format(len(payouts), txid))
-            else:
-                self.associate(txid, payouts, tx_fees[txid])
+            self.associate(txid, payouts, tx_fees[txid], simulate=simulate)
 
-    def associate(self, txid, payouts, tx_fee):
+    def associate(self, txid, payouts, tx_fee, simulate=False):
+        """
+        Attempt to associate Payout objects on SC with a specific transaction ID
+        that paid them. Also post the fee incurred by the transaction.
+        """
         pids = [p.pid for p in payouts]
         self.logger.info("Trying to associate {:,} payouts with txid {} on remote"
                          .format(len(payouts), txid))
@@ -345,6 +367,10 @@ class SCRPCClient(object):
                 'currency': self.config['currency_code']}
         self.logger.info("Associating {:,} payout ids and with txid {}"
                          .format(len(pids), txid))
+
+        if simulate:
+            self.logger.info('We\'re simulating, so don\'t actually post to SC')
+            return
 
         res = self.post('update_payouts', data=data)
         if res['result']:
@@ -379,6 +405,10 @@ class SCRPCClient(object):
                 tids.append(sc_obj['txid'])
                 self.logger.info("Confirmed txid {} with {} confirms"
                                  .format(sc_obj['txid'], rpc_tx_obj.confirmations))
+
+        if simulate:
+            self.logger.info('We\'re simulating, so don\'t actually post to SC')
+            return
 
         if tids:
             data = {'tids': tids}
