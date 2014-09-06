@@ -6,7 +6,7 @@ import sys
 import argparse
 import datetime
 import requests
-import decimal
+from decimal import Decimal as Dec
 
 from tabulate import tabulate
 from sqlalchemy.ext.declarative import declarative_base
@@ -30,7 +30,7 @@ class Payout(base):
     id = sa.Column(sa.Integer, primary_key=True)
     pid = sa.Column(sa.String, unique=True, nullable=False)
     user = sa.Column(sa.String, nullable=False)
-    amount = sa.Column(sa.BigInteger(), nullable=False)
+    amount = sa.Column(sa.Numeric(), nullable=False)
     txid = sa.Column(sa.String)
     associated = sa.Column(sa.Boolean, default=False, nullable=False)
     locked = sa.Column(sa.Boolean, default=False, nullable=False)
@@ -49,7 +49,7 @@ class Payout(base):
 
     @property
     def amount_float(self):
-        return self.amount / 100000000
+        return float(self.amount)
 
     def tabulize(self, columns):
         return [getattr(self, a) for a in columns]
@@ -210,8 +210,8 @@ class RPCClient(object):
                 # 2. Key is not populated
                 # 3. We got back a valid fee value from the rpc server
                 if 'fee' in trans_data and not obj.get("fee") and 'fee' in obj:
-                    assert isinstance(trans_data['fee'], decimal.Decimal)
-                    fees[obj['txid']] = int(trans_data['fee'] * 100000000)
+                    assert isinstance(trans_data['fee'], Dec)
+                    fees[obj['txid']] = trans_data['fee']
                     self.logger.info("Pushing fee value {} for txid {}"
                                      .format(trans_data['fee'], obj['txid']))
 
@@ -249,6 +249,8 @@ class RPCClient(object):
         new = 0
         invalid = 0
         for user, amount, pid in payouts:
+            # Convert amount from STR and ensure its a payable value
+            amount = Dec(amount).quantize(Dec('0.00000001'))
             # Check address is valid
             if not get_bcaddress_version(user) in self.config['valid_address_versions']:
                 self.logger.warn("Ignoring payout {} due to invalid address"
@@ -301,10 +303,9 @@ class RPCClient(object):
             payout.lock_time = datetime.datetime.utcnow()
 
         total_out = sum(user_payout_amounts.values())
-        # Convert into satoshi
-        balance = int(self.coinserv.getbalance() * 100000000)
-        self.logger.info("Payout wallet balance: {:,}".format(balance / 100000000.0))
-        self.logger.info("Total to be paid {:,}".format(total_out / 100000000.0))
+        balance = self.coinserv.getbalance()
+        self.logger.info("Payout wallet balance: {:,}".format(balance))
+        self.logger.info("Total to be paid {:,}".format(total_out))
 
         if balance < total_out:
             self.logger.error("Payout wallet is out of funds!")
@@ -322,7 +323,7 @@ class RPCClient(object):
             if len(pids) > 9:
                 return lst + "... ({} more)".format(len(pids) - 8)
             return lst
-        summary = [(user, amount / 100000000.0, format_pids(upids)) for
+        summary = [(user, amount, format_pids(upids)) for
                    (user, amount), upids in zip(user_payout_amounts.iteritems(), pids.itervalues())]
 
         self.logger.info(
@@ -341,7 +342,7 @@ class RPCClient(object):
                 # finally run rpc call to payout
                 coin_txid = self.payout_many(user_payout_amounts)
         except CoinRPCException:
-            new_balance = int(self.coinserv.getbalance() * 100000000)
+            new_balance = self.coinserv.getbalance()
             if new_balance != balance:
                 self.logger.error(
                     "RPC error occured and wallet balance changed! Keeping the "
@@ -439,7 +440,7 @@ class RPCClient(object):
             for payout in payouts:
                 payout.associated = True
                 payout.assoc_time = datetime.datetime.utcnow()
-                self.db.session.commit()
+            self.db.session.commit()
             return True
         return False
 
