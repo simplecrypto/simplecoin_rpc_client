@@ -258,6 +258,13 @@ class SCRPCClient(object):
 
             if amount < self.config['minimum_tx_output']:
                 # We're unable to pay, so undo the changes from the last loop
+                self.logger.warn('Removing {} with payout amount of {} (which '
+                                 'is lower than network output min of {}) from '
+                                 'the {} payout dictionary'
+                                 .format(user, amount,
+                                         self.config['minimum_tx_output'],
+                                         self.config['currency_code']))
+
                 user_payout_amounts[user] = 0
                 pids[user] = []
                 for payout in payouts:
