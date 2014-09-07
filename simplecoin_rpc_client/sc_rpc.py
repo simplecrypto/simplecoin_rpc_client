@@ -71,7 +71,8 @@ class SCRPCClient(object):
                            database_path=base + '/rpc.sqlite',
                            log_path=base + '/sc_rpc.log',
                            min_tx_confirms=12,
-                           wallet_account=None)
+                           wallet_account=None,
+                           minimum_tx_output=0.00000001)
         self.config.update(kwargs)
 
         required_conf = ['valid_address_versions', 'currency_code',
@@ -239,13 +240,8 @@ class SCRPCClient(object):
         user_payout_amounts = {}
         pids = {}
         for payout in payouts:
-            # Convert amount from STR and ensure its a payable value.
-            # Note that we're not trying to validate the amount here, all
-            # validation should be handled server side.
-            amount = round(float(payout.amount), 8)
-
             user_payout_amounts.setdefault(payout.user, 0)
-            user_payout_amounts[payout.user] += amount
+            user_payout_amounts[payout.user] += payout.amount
             pids.setdefault(payout.user, [])
             pids[payout.user].append(payout.pid)
 
@@ -253,6 +249,23 @@ class SCRPCClient(object):
             # between paying out and recording that payout action
             payout.locked = True
             payout.lock_time = datetime.datetime.utcnow()
+
+        for user, amount in user_payout_amounts.items():
+            # Convert amount from STR and coerce to a payable value.
+            # Note that we're not trying to validate the amount here, all
+            # validation should be handled server side.
+            amount = round(float(amount), 8)
+
+            if amount < self.config['minimum_tx_output']:
+                # We're unable to pay, so undo the changes from the last loop
+                user_payout_amounts[user] = 0
+                pids[user] = []
+                for payout in payouts:
+                    if payout.user == user:
+                        payout.locked = False
+                        payout.lock_time = None
+            else:
+                user_payout_amounts[user] = amount
 
         total_out = sum(user_payout_amounts.values())
         balance = self.coin_rpc.get_balance(self.config['wallet_account'])
