@@ -240,8 +240,8 @@ class SCRPCClient(object):
         user_payout_amounts = {}
         pids = {}
         for payout in payouts:
-            user_payout_amounts.setdefault(payout.user, 0)
-            user_payout_amounts[payout.user] += payout.amount
+            user_payout_amounts.setdefault(payout.user, 0.0)
+            user_payout_amounts[payout.user] += float(payout.amount)
             pids.setdefault(payout.user, [])
             pids[payout.user].append(payout.pid)
 
