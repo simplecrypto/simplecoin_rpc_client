@@ -1,6 +1,7 @@
 *.yml.*
 *.yml
 *.log
+*.sqlite
 
 *.py[cod]
 *.swp

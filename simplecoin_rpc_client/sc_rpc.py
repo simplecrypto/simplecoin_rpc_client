@@ -29,7 +29,8 @@ class Payout(base):
     id = sa.Column(sa.Integer, primary_key=True)
     pid = sa.Column(sa.String, unique=True, nullable=False)
     user = sa.Column(sa.String, nullable=False)
-    amount = sa.Column(sa.Numeric, nullable=False)
+    # SQLlite does not have support for Decimal - use STR instead
+    amount = sa.Column(sa.String, nullable=False)
     currency_code = sa.Column(sa.String, nullable=False)
     txid = sa.Column(sa.String)
     associated = sa.Column(sa.Boolean, default=False, nullable=False)
@@ -55,7 +56,7 @@ class Payout(base):
         return [getattr(self, a) for a in columns]
 
 
-class RPCException(Exception):
+class SCRPCException(Exception):
     pass
 
 
@@ -82,39 +83,41 @@ class SCRPCClient(object):
                 error = True
 
         if error:
-            raise RPCException('Errors occurred while configuring RPCClient obj')
+            raise SCRPCException('Errors occurred while configuring RPCClient obj')
 
     def __init__(self, config, CoinRPC, flask_app=None):
 
         if not config:
-            raise RPCException('Invalid configuration file')
+            raise SCRPCException('Invalid configuration file')
         self._set_config(**config)
 
         # Setup CoinRPC
         self.coin_rpc = CoinRPC
 
         # Setup the sqlite database mapper
-        engine = sa.create_engine('sqlite:///{}'.format(self.config['database_path']),
+        self.engine = sa.create_engine('sqlite:///{}'.format(self.config['database_path']),
                                   echo=self.config['log_level'] == "DEBUG")
 
         # Pulled from SQLA docs to implement strict exclusive access to the
         # payout state database.
         # See http://docs.sqlalchemy.org/en/rel_0_9/dialects/sqlite.html#pysqlite-serializable
-        @sa.event.listens_for(engine, "connect")
+        @sa.event.listens_for(self.engine, "connect")
         def do_connect(dbapi_connection, connection_record):
             # disable pysqlite's emitting of the BEGIN statement entirely.
             # also stops it from emitting COMMIT before any DDL.
             dbapi_connection.isolation_level = None
 
-        @sa.event.listens_for(engine, "begin")
+        @sa.event.listens_for(self.engine, "begin")
         def do_begin(conn):
             # emit our own BEGIN
             conn.execute("BEGIN EXCLUSIVE")
 
-        self.db = sessionmaker(bind=engine)
+        self.db = sessionmaker(bind=self.engine)
         self.db.session = self.db()
+        # Hack if flask is in the env
+        self.db.session._model_changes = {}
         # Create the table if it doesn't exist
-        Payout.__table__.create(engine, checkfirst=True)
+        Payout.__table__.create(self.engine, checkfirst=True)
 
         # Setup logger for the class
         if flask_app:
@@ -159,7 +162,7 @@ class SCRPCClient(object):
         self.logger.debug("Making request to {}".format(url))
         ret = getattr(requests, method)(url, timeout=270, **kwargs)
         if ret.status_code != 200:
-            raise RPCException("Non 200 from remote: {}".format(ret.text))
+            raise SCRPCException("Non 200 from remote: {}".format(ret.text))
 
         try:
             self.logger.debug("Got {} from remote".format(ret.text.encode('utf8')))
@@ -169,7 +172,7 @@ class SCRPCClient(object):
                 return ret.json()
         except BadData:
             self.logger.error("Invalid data returned from remote!", exc_info=True)
-            raise RPCException("Invalid signature")
+            raise SCRPCException("Invalid signature")
 
     ########################################################################
     # RPC Client methods
@@ -185,8 +188,6 @@ class SCRPCClient(object):
         new = 0
         invalid = 0
         for user, amount, pid in payouts:
-            # Convert amount from STR and ensure its a payable value
-            amount = Dec(amount).quantize(Dec('0.00000001'))
             # Check address is valid
             if not get_bcaddress_version(user) in self.config['valid_address_versions']:
                 self.logger.warn("Ignoring payout {} due to invalid address. "
@@ -196,7 +197,7 @@ class SCRPCClient(object):
                 invalid += 1
                 continue
             # Check payout doesn't already exist
-            if not self.db.session.query(Payout).filter_by(pid=pid).first():
+            if self.db.session.query(Payout).filter_by(pid=pid).first():
                 self.logger.debug("Ignoring payout {} because it already exists"
                                   " locally".format((user, amount, pid)))
                 repeat += 1
@@ -238,8 +239,13 @@ class SCRPCClient(object):
         user_payout_amounts = {}
         pids = {}
         for payout in payouts:
+            # Convert amount from STR and ensure its a payable value.
+            # Note that we're not trying to validate the amount here, all
+            # validation should be handled server side.
+            amount = round(float(payout.amount), 8)
+
             user_payout_amounts.setdefault(payout.user, 0)
-            user_payout_amounts[payout.user] += payout.amount
+            user_payout_amounts[payout.user] += amount
             pids.setdefault(payout.user, [])
             pids[payout.user].append(payout.pid)
 
@@ -250,7 +256,8 @@ class SCRPCClient(object):
 
         total_out = sum(user_payout_amounts.values())
         balance = self.coin_rpc.get_balance(self.config['wallet_account'])
-        self.logger.info("Payout wallet balance: {:,}".format(balance))
+        self.logger.info("Account balance for {} account \'{}\': {:,}".format(self.config['currency_code'], self.config['wallet_account'],
+                                                                   balance))
         self.logger.info("Total to be paid {:,}".format(total_out))
 
         if balance < total_out:
@@ -316,7 +323,7 @@ class SCRPCClient(object):
                 payout.paid_time = datetime.datetime.utcnow()
 
             self.db.session.commit()
-            self.logger.info("Updated {:,} payouts with txid {}"
+            self.logger.info("Updated {:,} (local) Payouts with txid {}"
                              .format(len(payouts), coin_txid))
             return coin_txid, rpc_tx_obj, payouts
 
@@ -342,7 +349,7 @@ class SCRPCClient(object):
         tx_fees = {}
         for txid in txids.iterkeys():
             try:
-                tx_fees[txid] = self.coin_rpc.get_transaction(txid)
+                tx_fees[txid] = self.coin_rpc.get_transaction(txid).fee
             except CoinRPCException as e:
                 self.logger.warn('Skipping transaction with id {}, failed '
                                  'looking it up from the {} wallet'
@@ -361,13 +368,11 @@ class SCRPCClient(object):
         that paid them. Also post the fee incurred by the transaction.
         """
         pids = [p.pid for p in payouts]
-        self.logger.info("Trying to associate {:,} payouts with txid {} on remote"
+        self.logger.info("Trying to associate {:,} payouts with txid {}"
                          .format(len(payouts), txid))
 
         data = {'coin_txid': txid, 'pids': pids, 'tx_fee': tx_fee,
                 'currency': self.config['currency_code']}
-        self.logger.info("Associating {:,} payout ids and with txid {}"
-                         .format(len(pids), txid))
 
         if simulate:
             self.logger.info('We\'re simulating, so don\'t actually post to SC')
@@ -381,6 +386,9 @@ class SCRPCClient(object):
                 payout.assoc_time = datetime.datetime.utcnow()
             self.db.session.commit()
             return True
+        else:
+            self.logger.error("Failed to push association information for {} "
+                              "payouts!".format(self.config['currency_code']))
         return False
 
     def confirm_trans(self, simulate=False):
@@ -389,7 +397,7 @@ class SCRPCClient(object):
         transaction if remote server supports it. """
         self.coin_rpc.poke_rpc()
 
-        res = self.get('api/transaction?__filter_by={{"confirmed":false,"currency":{}}}'
+        res = self.get('api/transaction?__filter_by={{"confirmed":false,"currency":"{}"}}'
                        .format(self.config['currency_code']), signed=False)
 
         if not res['success']:
@@ -415,13 +423,15 @@ class SCRPCClient(object):
             data = {'tids': tids}
             res = self.post('confirm_transactions', data=data)
             if res['result']:
-                self.logger.info("Sucessfully confirmed transactions")  # XXX: Add number print outs
+                self.logger.info("Sucessfully confirmed transactions")
+                # XXX: Add number print outs
+                # XXX: Delete/archive payout row
                 return True
 
             self.logger.error("Failed to push confirmation information")
             return False
         else:
-            self.logger.info("No valid transactions in need of fee value or confirmation")
+            self.logger.info("No transactions with the minimum confirmations")
 
     ########################################################################
     # Helpful local data management + analysis methods
@@ -435,6 +445,12 @@ class SCRPCClient(object):
             return
 
         payouts.update({Payout.locked: False})
+        self.db.session.commit()
+
+    def init_db(self, simulate=False):
+        """ Deletes all data from DB and rebuilds tables. Use carefully... """
+        Payout.__table__.drop(self.engine, checkfirst=True)
+        Payout.__table__.create(self.engine, checkfirst=True)
         self.db.session.commit()
 
     def _tabulate(self, title, query, headers=None):
@@ -461,17 +477,17 @@ class SCRPCClient(object):
 
     def unpaid_locked(self):
         self._tabulate(
-            "Unpaid locked payouts",
+            "Unpaid locked {} payouts".format(self.config['currency_code']),
             self.db.session.query(Payout).filter_by(txid=None, locked=True))
 
     def paid_unassoc(self):
         self._tabulate(
-            "Paid un-associated payouts",
+            "Paid un-associated {} payouts".format(self.config['currency_code']),
             self.db.session.query(Payout).filter_by(associated=False).filter(Payout.txid != None))
 
     def unpaid_unlocked(self):
         self._tabulate(
-            "Payouts ready to payout",
+            "{} payouts ready to payout".format(self.config['currency_code']),
             self.db.session.query(Payout).filter_by(txid=None, locked=False))
 
     def call(self, command, **kwargs):
