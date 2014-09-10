@@ -1,4 +1,5 @@
 from sc_trader.utils.exceptions import CoinRPCException
+from urllib3.exceptions import ConnectionError
 import yaml
 import time
 import os
@@ -68,12 +69,15 @@ class SCRPCClient(object):
                            max_age=10,
                            logger_name="sc_rpc_client",
                            log_level="INFO",
-                           database_path=base + '/rpc.sqlite',
+                           database_path=base + '/rpc_',
                            log_path=base + '/sc_rpc.log',
                            min_tx_confirms=12,
                            wallet_account=None,
                            minimum_tx_output=0.00000001)
         self.config.update(kwargs)
+
+        # Kinda sloppy, but it works
+        self.config['database_path'] += self.config['currency_code'] + '.sqlite'
 
         required_conf = ['valid_address_versions', 'currency_code',
                          'rpc_signature', 'rpc_url']
@@ -143,9 +147,6 @@ class SCRPCClient(object):
 
         self.serializer = TimedSerializer(self.config['rpc_signature'])
 
-    def hello(self):
-        print self.config
-
     ########################################################################
     # Helper URL methods
     ########################################################################
@@ -180,10 +181,18 @@ class SCRPCClient(object):
     ########################################################################
     def pull_payouts(self, simulate=False):
         """ Gets all the unpaid payouts from the server """
-        payouts = self.post(
-            'get_payouts',
-            data={'currency': self.config['currency_code']}
-        )['pids']
+        try:
+            payouts = self.post(
+                'get_payouts',
+                data={'currency': self.config['currency_code']}
+            )['pids']
+        except ConnectionError:
+            self.logger.warn('Unable to connect to SC!', exc_info=True)
+            return
+
+        if not payouts:
+            self.logger.info("No payouts to process..")
+            return
 
         repeat = 0
         new = 0
