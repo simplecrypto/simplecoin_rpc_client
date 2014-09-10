@@ -1,19 +1,15 @@
-from sc_trader.utils.exceptions import CoinRPCException
-from urllib3.exceptions import ConnectionError
 import yaml
-import time
 import os
-import logging
-import sys
 import argparse
 import datetime
 import requests
-from decimal import Decimal as Dec
+import sqlalchemy as sa
 
+from sc_trader.utils.exceptions import CoinRPCException
+from urllib3.exceptions import ConnectionError
 from tabulate import tabulate
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-import sqlalchemy as sa
 
 from urlparse import urljoin
 from cryptokit.base58 import get_bcaddress_version
@@ -30,6 +26,7 @@ class Payout(base):
     id = sa.Column(sa.Integer, primary_key=True)
     pid = sa.Column(sa.String, unique=True, nullable=False)
     user = sa.Column(sa.String, nullable=False)
+    address = sa.Column(sa.String, nullable=False)
     # SQLlite does not have support for Decimal - use STR instead
     amount = sa.Column(sa.String, nullable=False)
     currency_code = sa.Column(sa.String, nullable=False)
@@ -197,23 +194,24 @@ class SCRPCClient(object):
         repeat = 0
         new = 0
         invalid = 0
-        for user, amount, pid in payouts:
+        for user, address, amount, pid in payouts:
             # Check address is valid
-            if not get_bcaddress_version(user) in self.config['valid_address_versions']:
+            if not get_bcaddress_version(address) in self.config['valid_address_versions']:
                 self.logger.warn("Ignoring payout {} due to invalid address. "
                                  "{} address did not match a valid version {}"
-                                 .format((user, amount, pid), self.config['currency_code'],
+                                 .format((user, address, amount, pid),
+                                         self.config['currency_code'],
                                          self.config['valid_address_versions']))
                 invalid += 1
                 continue
             # Check payout doesn't already exist
             if self.db.session.query(Payout).filter_by(pid=pid).first():
                 self.logger.debug("Ignoring payout {} because it already exists"
-                                  " locally".format((user, amount, pid)))
+                                  " locally".format((user, address, amount, pid)))
                 repeat += 1
                 continue
             # Create local payout obj
-            p = Payout(pid=pid, user=user, amount=amount,
+            p = Payout(pid=pid, user=user, address=address, amount=amount,
                        currency_code=self.config['currency_code'],
                        pull_time=datetime.datetime.utcnow())
             new += 1
@@ -245,21 +243,21 @@ class SCRPCClient(object):
             self.logger.info("No payouts to process, exiting")
             return True
 
-        # track the total payouts to each user
-        user_payout_amounts = {}
+        # track the total payouts to each address
+        address_payout_amounts = {}
         pids = {}
         for payout in payouts:
-            user_payout_amounts.setdefault(payout.user, 0.0)
-            user_payout_amounts[payout.user] += float(payout.amount)
-            pids.setdefault(payout.user, [])
-            pids[payout.user].append(payout.pid)
+            address_payout_amounts.setdefault(payout.address, 0.0)
+            address_payout_amounts[payout.address] += float(payout.amount)
+            pids.setdefault(payout.address, [])
+            pids[payout.address].append(payout.pid)
 
             # We'll lock the payout before continuing in case of a failure in
             # between paying out and recording that payout action
             payout.locked = True
             payout.lock_time = datetime.datetime.utcnow()
 
-        for user, amount in user_payout_amounts.items():
+        for address, amount in address_payout_amounts.items():
             # Convert amount from STR and coerce to a payable value.
             # Note that we're not trying to validate the amount here, all
             # validation should be handled server side.
@@ -270,20 +268,20 @@ class SCRPCClient(object):
                 self.logger.warn('Removing {} with payout amount of {} (which '
                                  'is lower than network output min of {}) from '
                                  'the {} payout dictionary'
-                                 .format(user, amount,
+                                 .format(address, amount,
                                          self.config['minimum_tx_output'],
                                          self.config['currency_code']))
 
-                user_payout_amounts[user] = 0
-                pids[user] = []
+                address_payout_amounts[address] = 0
+                pids[address] = []
                 for payout in payouts:
-                    if payout.user == user:
+                    if payout.address == address:
                         payout.locked = False
                         payout.lock_time = None
             else:
-                user_payout_amounts[user] = amount
+                address_payout_amounts[address] = amount
 
-        total_out = sum(user_payout_amounts.values())
+        total_out = sum(address_payout_amounts.values())
         balance = self.coin_rpc.get_balance(self.config['wallet_account'])
         self.logger.info("Account balance for {} account \'{}\': {:,}".format(self.config['currency_code'], self.config['wallet_account'],
                                                                    balance))
@@ -305,11 +303,11 @@ class SCRPCClient(object):
             if len(pids) > 9:
                 return lst + "... ({} more)".format(len(pids) - 8)
             return lst
-        summary = [(user, amount, format_pids(upids)) for
-                   (user, amount), upids in zip(user_payout_amounts.iteritems(), pids.itervalues())]
+        summary = [(address, amount, format_pids(upids)) for
+                   (address, amount), upids in zip(address_payout_amounts.iteritems(), pids.itervalues())]
 
         self.logger.info(
-            "User payment summary\n" + tabulate(summary, headers=["User", "Total", "Pids"], tablefmt="grid"))
+            "Address payment summary\n" + tabulate(summary, headers=["Address", "Total", "Pids"], tablefmt="grid"))
 
         try:
             if simulate:
@@ -323,7 +321,7 @@ class SCRPCClient(object):
                     return True
             else:
                 # finally run rpc call to payout
-                coin_txid, rpc_tx_obj = self.coin_rpc.send_many(user_payout_amounts, self.config['wallet_account'])
+                coin_txid, rpc_tx_obj = self.coin_rpc.send_many(address_payout_amounts, self.config['wallet_account'])
         except CoinRPCException:
             new_balance = self.coin_rpc.get_balance(self.config['wallet_account'])
             if new_balance != balance:
@@ -487,7 +485,7 @@ class SCRPCClient(object):
         title to label the table, and an optional list of columns to display
         """
         print("@@ {} @@".format(title))
-        headers = headers if headers else ["pid", "user", "amount_float", "associated", "locked", "trans_id"]
+        headers = headers if headers else ["pid", "user", "address", "amount_float", "associated", "locked", "trans_id"]
         data = [p.tabulize(headers) for p in query]
         if data:
             print(tabulate(data, headers=headers, tablefmt="grid"))
