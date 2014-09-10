@@ -178,6 +178,10 @@ class SCRPCClient(object):
     ########################################################################
     def pull_payouts(self, simulate=False):
         """ Gets all the unpaid payouts from the server """
+
+        if simulate:
+            self.logger.info('#'*20 + ' Simulation mode ' + '##########'*20)
+
         try:
             payouts = self.post(
                 'get_payouts',
@@ -229,6 +233,9 @@ class SCRPCClient(object):
     def send_payout(self, simulate=False):
         """ Collects all the unpaid payout ids (for the configured currency)
         and pays them out """
+        if simulate:
+            self.logger.info('#'*20 + ' Simulation mode ' + '##########'*20)
+
         self.coin_rpc.poke_rpc()
 
         # Grab all payouts now so that we use the same list of payouts for both
@@ -360,6 +367,9 @@ class SCRPCClient(object):
         and have a transaction id, and attempts to push that transaction ids
         and fees to the SC Payout object
         """
+        if simulate:
+            self.logger.info('#'*20 + ' Simulation mode ' + '##########'*20)
+            
         payouts = (self.db.session.query(Payout).
                    filter_by(associated=False,
                              currency_code=self.config['currency_code']).
@@ -398,7 +408,7 @@ class SCRPCClient(object):
         self.logger.info("Trying to associate {:,} payouts with txid {}"
                          .format(len(payouts), txid))
 
-        data = {'coin_txid': txid, 'pids': pids, 'tx_fee': tx_fee,
+        data = {'coin_txid': txid, 'pids': pids, 'tx_fee': float(tx_fee),
                 'currency': self.config['currency_code']}
 
         if simulate:
