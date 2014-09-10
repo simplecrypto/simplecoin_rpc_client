@@ -202,7 +202,7 @@ class SCRPCClient(object):
             if not get_bcaddress_version(user) in self.config['valid_address_versions']:
                 self.logger.warn("Ignoring payout {} due to invalid address. "
                                  "{} address did not match a valid version {}"
-                                 .format((user, amount, pid), self.config['currenct_code'],
+                                 .format((user, amount, pid), self.config['currency_code'],
                                          self.config['valid_address_versions']))
                 invalid += 1
                 continue
