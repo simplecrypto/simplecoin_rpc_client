@@ -369,7 +369,7 @@ class SCRPCClient(object):
         """
         if simulate:
             self.logger.info('#'*20 + ' Simulation mode ' + '##########'*20)
-            
+
         payouts = (self.db.session.query(Payout).
                    filter_by(associated=False,
                              currency_code=self.config['currency_code']).
@@ -503,7 +503,7 @@ class SCRPCClient(object):
             print("-- Nothing to display --")
         print("")
 
-    def dump_incomplete(self, simulate=False, unpaid_locked=True, paid_unassoc=True, unpaid_unlocked=True):
+    def dump_incomplete(self, unpaid_locked=True, paid_unassoc=True, unpaid_unlocked=True):
         """ Prints out a nice display of all incomplete payout records. """
         if unpaid_locked:
             self.unpaid_locked()
@@ -515,17 +515,23 @@ class SCRPCClient(object):
     def unpaid_locked(self):
         self._tabulate(
             "Unpaid locked {} payouts".format(self.config['currency_code']),
-            self.db.session.query(Payout).filter_by(txid=None, locked=True))
+            self.db.session.query(Payout).filter_by(txid=None, locked=True).all())
 
     def paid_unassoc(self):
         self._tabulate(
             "Paid un-associated {} payouts".format(self.config['currency_code']),
-            self.db.session.query(Payout).filter_by(associated=False).filter(Payout.txid != None))
+            self.db.session.query(Payout).filter_by(associated=False).filter(Payout.txid != None).all())
 
     def unpaid_unlocked(self):
         self._tabulate(
             "{} payouts ready to payout".format(self.config['currency_code']),
-            self.db.session.query(Payout).filter_by(txid=None, locked=False))
+            self.db.session.query(Payout).filter_by(txid=None, locked=False).all())
+
+    def dump_complete(self):
+        """ Prints out a nice display of all completed payout records. """
+        self._tabulate(
+            "Paid + associated {} payouts".format(self.config['currency_code']),
+            self.db.session.query(Payout).filter_by(associated=True).filter(Payout.txid != None).all())
 
     def call(self, command, **kwargs):
         try:
