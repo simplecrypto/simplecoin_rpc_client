@@ -279,7 +279,7 @@ class SCRPCClient(object):
                                          self.config['minimum_tx_output'],
                                          self.config['currency_code']))
 
-                address_payout_amounts[address] = 0
+                address_payout_amounts.pop(address)
                 pids[address] = []
                 for payout in payouts:
                     if payout.address == address:
