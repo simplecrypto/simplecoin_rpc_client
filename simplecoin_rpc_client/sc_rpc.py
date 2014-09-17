@@ -351,15 +351,19 @@ class SCRPCClient(object):
         else:
             # Success! Now associate the txid and unlock to allow association
             # with remote to occur
+            payout_addrs = [address for address in address_payout_amounts.iterkeys()]
+            finalized_payouts = []
             for payout in payouts:
-                payout.locked = False
-                payout.txid = coin_txid
-                payout.paid_time = datetime.datetime.utcnow()
+                if payout.address in payout_addrs:
+                    payout.locked = False
+                    payout.txid = coin_txid
+                    payout.paid_time = datetime.datetime.utcnow()
+                    finalized_payouts.append(payout)
 
             self.db.session.commit()
             self.logger.info("Updated {:,} (local) Payouts with txid {}"
-                             .format(len(payouts), coin_txid))
-            return coin_txid, rpc_tx_obj, payouts
+                             .format(len(finalized_payouts), coin_txid))
+            return coin_txid, rpc_tx_obj, finalized_payouts
 
     def associate_all(self, simulate=False):
         """
