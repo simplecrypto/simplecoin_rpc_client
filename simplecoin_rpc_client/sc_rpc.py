@@ -225,9 +225,9 @@ class SCRPCClient(object):
 
         self.db.session.commit()
 
-        self.logger.info("Inserted {:,} new payouts and skipped {:,} old "
+        self.logger.info("Inserted {:,} new {} payouts and skipped {:,} old "
                          "payouts from the server. {:,} payouts with invalid addresses."
-                         .format(new, repeat, invalid))
+                         .format(new, self.config['currency_code'], repeat, invalid))
         return True
 
     def send_payout(self, simulate=False):
@@ -438,7 +438,12 @@ class SCRPCClient(object):
         transaction if remote server supports it. """
         self.logger.info("Attempting to grab uncofirmed {} transactions from "
                          "SC, poking the RPC...".format(self.config['currency_code']))
-        self.coin_rpc.poke_rpc()
+        try:
+            self.coin_rpc.poke_rpc()
+        except CoinRPCException as e:
+            self.logger.warn("Error occured while trying to get info from the "
+                             "{} RPC. Got {}".format(self.config['currency_code'], e))
+            return False
 
         res = self.get('api/transaction?__filter_by={{"confirmed":false,"currency":"{}"}}'
                        .format(self.config['currency_code']), signed=False)
