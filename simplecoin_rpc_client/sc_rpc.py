@@ -437,7 +437,7 @@ class SCRPCClient(object):
         and checks if they're confirmed. Also grabs and pushes the fees for the
         transaction if remote server supports it. """
         self.logger.info("Attempting to grab uncofirmed {} transactions from "
-                         "SC, poking the RPC...".format(self.currency_code))
+                         "SC, poking the RPC...".format(self.config['currency_code']))
         self.coin_rpc.poke_rpc()
 
         res = self.get('api/transaction?__filter_by={{"confirmed":false,"currency":"{}"}}'
