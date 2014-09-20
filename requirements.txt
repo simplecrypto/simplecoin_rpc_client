@@ -1,4 +1,4 @@
-git+https://github.com/icook/cryptokit
+git+https://github.com/simplecrypto/cryptokit.git@multi#egg=cryptokit
 PyYAML==3.10
 SQLAlchemy==0.9.1
 itsdangerous==0.24
