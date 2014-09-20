@@ -1,3 +1,5 @@
+import logging
+import sys
 import yaml
 import os
 import argparse
@@ -5,7 +7,7 @@ import datetime
 import requests
 import sqlalchemy as sa
 
-from sc_trader.utils.exceptions import CoinRPCException
+from cryptokit.rpc import CoinRPCException
 from urllib3.exceptions import ConnectionError
 from tabulate import tabulate
 from sqlalchemy.ext.declarative import declarative_base
@@ -62,8 +64,7 @@ class SCRPCClient(object):
     def _set_config(self, **kwargs):
         # A fast way to set defaults for the kwargs then set them as attributes
         base = os.path.abspath(os.path.dirname(__file__) + '/../')
-        self.config = dict(valid_address_versions=[],
-                           max_age=10,
+        self.config = dict(max_age=10,
                            logger_name="sc_rpc_client",
                            log_level="INFO",
                            database_path=base + '/rpc_',
@@ -87,7 +88,7 @@ class SCRPCClient(object):
         if error:
             raise SCRPCException('Errors occurred while configuring RPCClient obj')
 
-    def __init__(self, config, CoinRPC, flask_app=None):
+    def __init__(self, config, CoinRPC, logger=None):
 
         if not config:
             raise SCRPCException('Invalid configuration file')
@@ -98,7 +99,7 @@ class SCRPCClient(object):
 
         # Setup the sqlite database mapper
         self.engine = sa.create_engine('sqlite:///{}'.format(self.config['database_path']),
-                                  echo=self.config['log_level'] == "DEBUG")
+                                       echo=self.config['log_level'] == "DEBUG")
 
         # Pulled from SQLA docs to implement strict exclusive access to the
         # payout state database.
@@ -122,25 +123,26 @@ class SCRPCClient(object):
         Payout.__table__.create(self.engine, checkfirst=True)
 
         # Setup logger for the class
-        if flask_app:
-            self.logger = flask_app.logger
-        # logging.Formatter.converter = time.gmtime
-        # self.logger = logging.getLogger(self.config['logger_name'])
-        # self.logger.setLevel(getattr(logging, self.config['log_level']))
-        # log_format = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-        #
-        # # stdout handler
-        # handler = logging.StreamHandler(sys.stdout)
-        # handler.setFormatter(log_format)
-        # handler.setLevel(getattr(logging, self.config['log_level']))
-        # self.logger.addHandler(handler)
-        #
-        # # don't attach a file handler if path evals false
-        # if self.config['log_path']:
-        #     handler = logging.FileHandler(self.config['log_path'])
-        #     handler.setFormatter(log_format)
-        #     handler.setLevel(getattr(logging, self.config['log_level']))
-        #     self.logger.addHandler(handler)
+        if logger:
+            self.logger = logger
+        else:
+            logging.Formatter.converter = datetime.time.gmtime
+            self.logger = logging.getLogger(self.config['logger_name'])
+            self.logger.setLevel(getattr(logging, self.config['log_level']))
+            log_format = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+
+            # stdout handler
+            handler = logging.StreamHandler(sys.stdout)
+            handler.setFormatter(log_format)
+            handler.setLevel(getattr(logging, self.config['log_level']))
+            self.logger.addHandler(handler)
+
+            # don't attach a file handler if path evals false
+            if self.config['log_path']:
+                handler = logging.FileHandler(self.config['log_path'])
+                handler.setFormatter(log_format)
+                handler.setLevel(getattr(logging, self.config['log_level']))
+                self.logger.addHandler(handler)
 
         self.serializer = TimedSerializer(self.config['rpc_signature'])
 
@@ -180,7 +182,7 @@ class SCRPCClient(object):
         """ Gets all the unpaid payouts from the server """
 
         if simulate:
-            self.logger.info('#'*20 + ' Simulation mode ' + '##########'*20)
+            self.logger.info('#'*20 + ' Simulation mode ' + '#'*20)
 
         try:
             payouts = self.post(
@@ -328,7 +330,7 @@ class SCRPCClient(object):
                     return True
             else:
                 # finally run rpc call to payout
-                coin_txid, rpc_tx_obj = self.coin_rpc.send_many(address_payout_amounts, self.config['wallet_account'])
+                coin_txid, rpc_tx_obj = self.coin_rpc.send_many(self.config['wallet_account'], address_payout_amounts)
         except CoinRPCException:
             new_balance = self.coin_rpc.get_balance(self.config['wallet_account'])
             if new_balance != balance:

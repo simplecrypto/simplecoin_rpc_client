@@ -3,7 +3,7 @@
 from setuptools import setup, find_packages
 
 setup(name='simplecoin_rpc_client',
-      version='0.1.0',
+      version='0.2.0',
       author='Isaac Cook',
       author_email='isaac@simpload.com',
       entry_points={
