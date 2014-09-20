@@ -1,0 +1,27 @@
+sc_rpc_client:
+    # key used to sign rpc requests for payout system. Keep this secure
+    rpc_signature: test
+    # where are we expecting the SC rpc server to be?
+    rpc_url: http://0.0.0.0:9400/
+
+currencies:
+    - enabled: True
+      # BTC, LTC, etc..
+      currency_code: LTC
+      # connection information for the merge coinserver RPC
+      coinserv:
+        port: 19332
+        address: localhost
+        username: litecoin
+        password: testing
+        wallet_pass: testing
+        account: pool
+      # A list of valid address versions for this currency. As per:
+      # https://en.bitcoin.it/wiki/List_of_address_prefixes
+      valid_address_versions: [111]
+      # required number of transaction confirmations before marking confirmed
+      min_confirms: 6
+      # Pay an optional fee (Per KB). Functions as a minimum
+      tx_fee: 0.00000000
+      # Avoid attempting to send amounts smaller than network min
+      minimum_tx_output: 0.00000001
