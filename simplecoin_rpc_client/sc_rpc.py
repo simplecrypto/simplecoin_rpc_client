@@ -70,7 +70,7 @@ class SCRPCClient(object):
                            database_path=base + '/rpc_',
                            log_path=base + '/sc_rpc.log',
                            min_tx_confirms=12,
-                           wallet_account=None,
+                           account="",
                            minimum_tx_output=0.00000001)
         self.config.update(kwargs)
 
@@ -291,9 +291,10 @@ class SCRPCClient(object):
                 address_payout_amounts[address] = amount
 
         total_out = sum(address_payout_amounts.values())
-        balance = self.coin_rpc.get_balance(self.config['wallet_account'])
-        self.logger.info("Account balance for {} account \'{}\': {:,}".format(self.config['currency_code'], self.config['wallet_account'],
-                                                                   balance))
+        balance = self.coin_rpc.get_balance(self.config['account'])
+        self.logger.info("Account balance for {} account \'{}\': {:,}"
+                         .format(self.config['currency_code'],
+                                 self.config['account'], balance))
         self.logger.info("Total to be paid {:,}".format(total_out))
 
         if balance < total_out:
@@ -330,9 +331,9 @@ class SCRPCClient(object):
                     return True
             else:
                 # finally run rpc call to payout
-                coin_txid, rpc_tx_obj = self.coin_rpc.send_many(self.config['wallet_account'], address_payout_amounts)
+                coin_txid, rpc_tx_obj = self.coin_rpc.send_many(self.config['account'], address_payout_amounts)
         except CoinRPCException:
-            new_balance = self.coin_rpc.get_balance(self.config['wallet_account'])
+            new_balance = self.coin_rpc.get_balance(self.config['account'])
             if new_balance != balance:
                 self.logger.error(
                     "RPC error occured and wallet balance changed! Keeping the "
