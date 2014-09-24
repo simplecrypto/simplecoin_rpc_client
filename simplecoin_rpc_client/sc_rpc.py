@@ -235,7 +235,7 @@ class SCRPCClient(object):
         """ Collects all the unpaid payout ids (for the configured currency)
         and pays them out """
         if simulate:
-            self.logger.info('#'*20 + ' Simulation mode ' + '##########'*20)
+            self.logger.info('#'*20 + ' Simulation mode ' + '#'*20)
 
         self.coin_rpc.poke_rpc()
 
@@ -301,6 +301,11 @@ class SCRPCClient(object):
             self.db.session.rollback()
             # XXX: Add an email call here
             return False
+
+        if total_out == 0:
+            self.logger.info("Paying out 0 funds! Aborting...")
+            self.db.session.rollback()
+            return True
 
         if not simulate:
             self.db.session.commit()
@@ -375,7 +380,7 @@ class SCRPCClient(object):
         and fees to the SC Payout object
         """
         if simulate:
-            self.logger.info('#'*20 + ' Simulation mode ' + '##########'*20)
+            self.logger.info('#'*20 + ' Simulation mode ' + '#'*20)
 
         payouts = (self.db.session.query(Payout).
                    filter_by(associated=False,
