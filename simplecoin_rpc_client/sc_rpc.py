@@ -193,7 +193,8 @@ class SCRPCClient(object):
             return
 
         if not payouts:
-            self.logger.info("No payouts to process..")
+            self.logger.info("No {} payouts to process.."
+                             .format(self.config['currency_code']))
             return
 
         repeat = 0
@@ -317,7 +318,7 @@ class SCRPCClient(object):
             if len(pids) > 9:
                 return lst + "... ({} more)".format(len(pids) - 8)
             return lst
-        summary = [(address, amount, format_pids(upids)) for
+        summary = [(str(address), amount, str(format_pids(upids))) for
                    (address, amount), upids in zip(address_payout_amounts.iteritems(), pids.itervalues())]
 
         self.logger.info(
@@ -474,6 +475,10 @@ class SCRPCClient(object):
                 tids.append(sc_obj['txid'])
                 self.logger.info("Confirmed txid {} with {} confirms"
                                  .format(sc_obj['txid'], rpc_tx_obj.confirmations))
+            else:
+                self.logger.info("TX {} not yet confirmed. {}/{} confirms"
+                                 .format(sc_obj['txid'], rpc_tx_obj.confirmations,
+                                         self.config['min_confirms']))
 
         if simulate:
             self.logger.info('We\'re simulating, so don\'t actually post to SC')
@@ -490,8 +495,6 @@ class SCRPCClient(object):
 
             self.logger.error("Failed to push confirmation information")
             return False
-        else:
-            self.logger.info("No transactions with the minimum confirmations")
 
     ########################################################################
     # Helpful local data management + analysis methods
