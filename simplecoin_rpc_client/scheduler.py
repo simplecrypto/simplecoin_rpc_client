@@ -69,7 +69,7 @@ class PayoutManager(object):
     @crontab
     def confirm_payouts(self):
         for currency, sc_rpc in self.sc_rpc.iteritems():
-            sc_rpc.confirm_payouts()
+            sc_rpc.confirm_trans()
 
     @crontab
     def init_db(self):
@@ -86,8 +86,7 @@ class PayoutManager(object):
         for currency, sc_rpc in self.sc_rpc.iteritems():
             sc_rpc.dump_complete()
 
-
-if __name__ == "__main__":
+def entry():
     parser = argparse.ArgumentParser(prog='simplecoin rpc client scheduler')
     parser.add_argument('-l', '--log-level',
                         choices=['DEBUG', 'INFO', 'WARN', 'ERROR'],
@@ -138,3 +137,6 @@ if __name__ == "__main__":
 
 
     sched.start()
+
+if __name__ == "__main__":
+    entry()
