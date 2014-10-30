@@ -238,7 +238,13 @@ class SCRPCClient(object):
         if simulate:
             self.logger.info('#'*20 + ' Simulation mode ' + '#'*20)
 
-        self.coin_rpc.poke_rpc()
+        try:
+            self.coin_rpc.poke_rpc()
+        except CoinRPCException as e:
+            self.logger.warn(
+                "Error occured while trying to get info from the {} RPC. Got "
+                "{}".format(self.config['currency_code'], e))
+            return False
 
         # Grab all payouts now so that we use the same list of payouts for both
         # database transactions (locking, and unlocking)
@@ -441,6 +447,50 @@ class SCRPCClient(object):
                               "payouts!".format(self.config['currency_code']))
         return False
 
+    def local_associate_locked(self, pid, tx_id, simulate=False):
+        """
+        Locally associates a payout, with which is both unpaid and
+        locked, with a TXID.
+        """
+        payout = (self.db.session.query(Payout)
+                  .filter_by(txid=None, locked=True, id=pid).all())
+        self.logger.info("Associating payout id {} with TX ID {}"
+                         .format(payout.id, tx_id))
+        if simulate:
+            self.logger.info("Just kidding, we're simulating... Exit.")
+            return
+
+        payout.txid = tx_id
+        self.db.session.commit()
+        return True
+
+    def local_associate_all_locked(self, tx_id, simulate=False):
+        """
+        Locally associates payouts for this _currency_ which are both unpaid and
+        locked with a TXID
+
+        If you want to locally associate an individual payout ID with a TX use
+        local_associate_locked()
+
+        You'll want to use this function if a payout went out and you have the
+        txid, but for whatever reason it didn't get saved/updated in the local
+        DB. After you've done this you'll still need to run the functions to
+        associate everything on the remote server after.
+        """
+        payouts = (self.db.session.query(Payout)
+                   .filter_by(txid=None, locked=True,
+                              currency_code=self.config['currency_code'])
+                   .all())
+        self.logger.info("Associating {:,} payout ids with TX ID {}"
+                         .format(payouts.count(), tx_id))
+        if simulate:
+            self.logger.info("Just kidding, we're simulating... Exit.")
+            return
+
+        payouts.update({Payout.txid: tx_id})
+        self.db.session.commit()
+        return True
+
     def confirm_trans(self, simulate=False):
         """ Grabs the unconfirmed transactions objects from the remote server
         and checks if they're confirmed. Also grabs and pushes the fees for the
@@ -450,8 +500,9 @@ class SCRPCClient(object):
         try:
             self.coin_rpc.poke_rpc()
         except CoinRPCException as e:
-            self.logger.warn("Error occured while trying to get info from the "
-                             "{} RPC. Got {}".format(self.config['currency_code'], e))
+            self.logger.warn(
+                "Error occured while trying to get info from the {} RPC. Got "
+                "{}".format(self.config['currency_code'], e))
             return False
 
         res = self.get('api/transaction?__filter_by={{"confirmed":false,"currency":"{}"}}'
