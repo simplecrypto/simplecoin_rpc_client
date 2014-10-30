@@ -461,6 +461,7 @@ class SCRPCClient(object):
             return
 
         payout.txid = tx_id
+
         self.db.session.commit()
         return True
 
@@ -482,12 +483,14 @@ class SCRPCClient(object):
                               currency_code=self.config['currency_code'])
                    .all())
         self.logger.info("Associating {:,} payout ids with TX ID {}"
-                         .format(payouts.count(), tx_id))
+                         .format(len(payouts), tx_id))
         if simulate:
             self.logger.info("Just kidding, we're simulating... Exit.")
             return
 
-        payouts.update({Payout.txid: tx_id})
+        for payout in payouts:
+            payout.txid = tx_id
+
         self.db.session.commit()
         return True
 
