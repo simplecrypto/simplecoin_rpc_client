@@ -345,7 +345,8 @@ class SCRPCClient(object):
                 # finally run rpc call to payout
                 coin_txid, rpc_tx_obj = self.coin_rpc.send_many(
                     self.coin_rpc.coinserv['account'], address_payout_amounts)
-        except CoinRPCException:
+        except CoinRPCException as e:
+            self.logger.warn(e)
             new_balance = self.coin_rpc.get_balance(self.coin_rpc.coinserv['account'])
             if new_balance != balance:
                 self.logger.error(
