@@ -86,6 +86,7 @@ class PayoutManager(object):
         for currency, sc_rpc in self.sc_rpc.iteritems():
             sc_rpc.dump_complete()
 
+
 def entry():
     parser = argparse.ArgumentParser(prog='simplecoin rpc client scheduler')
     parser.add_argument('-l', '--log-level',

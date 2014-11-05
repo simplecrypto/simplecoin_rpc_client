@@ -1,4 +1,5 @@
 import logging
+from pprint import pformat
 import sys
 import yaml
 import os
@@ -550,6 +551,92 @@ class SCRPCClient(object):
             self.logger.error("Failed to push confirmation information")
             return False
 
+    def get_open_trade_requests(self):
+        """
+        Grabs the open trade requests from the server and prints off
+        info about them
+        """
+
+        try:
+            trs = self.post('get_trade_requests')['trs']
+        except ConnectionError:
+            self.logger.warn('Unable to connect to SC!', exc_info=True)
+            return
+
+        if not trs:
+            self.logger.info("No {} trade requests returned from SC..."
+                             .format(self.config['currency_code']))
+
+        # basic checking of input
+        try:
+            for tr_id, currency, quantity, type in trs:
+                assert isinstance(tr_id, int)
+                assert isinstance(currency, basestring)
+                assert isinstance(quantity, float)
+                assert isinstance(type, basestring)
+                assert type == 'buy' or 'sell'
+        except AssertionError:
+            self.logger.warn("Invalid TR format returned from RPC call "
+                             "get_trade_requests.", exc_info=True)
+            return
+
+        brs = []
+        srs = []
+        for tr_id, currency, quantity, type in trs[:]:
+            tr = [tr_id, currency, quantity, type]
+
+            # remove trs not for this currency
+            if currency != self.config['currency_code']:
+                trs.remove(tr)
+
+            if type == 'sell':
+                srs.append(tr)
+            if type == 'buy':
+                brs.append(tr)
+
+        self.logger.info("Got {} {} sell requests from SC"
+                         .format(len(srs), self.config['currency_code']))
+        self.logger.info("Got {} {} buy requests from SC"
+                         .format(len(brs), self.config['currency_code']))
+
+        # Print
+        headers = ['tr_id', 'currency', 'quantity', 'type']
+        print("@@ Open {} sell requests @@".format(self.config['currency_code']))
+        print(tabulate(srs, headers=headers, tablefmt="grid"))
+        print("@@ Open {} buy requests @@".format(self.config['currency_code']))
+        print(tabulate(brs, headers=headers, tablefmt="grid"))
+
+    def close_trade_request(self, tr_id, quantity, total_fees, simulate=False):
+
+        if simulate:
+            self.logger.info('#'*20 + ' Simulation mode ' + '#'*20)
+
+        completed_trs = {tr_id: {'status': 6,
+                                 'quantity': str(quantity),
+                                 'fees': str(total_fees)}}
+
+        if not simulate:
+            # Post the dictionary
+            response = self.post(
+                'update_trade_requests',
+                data={'update': True, 'trs': completed_trs}
+            )
+
+            if 'success' in response:
+                self.logger.info(
+                    "Successfully posted {} updated trade requests to SC!"
+                    .format(len(completed_trs)))
+            else:
+                self.logger.warn(
+                    "Failed posting request updates! Attempted to post the "
+                    "following dictionary: {}".format(pformat(completed_trs)))
+        else:
+            self.logger.info(
+                "Simulating - but would have posted the following dictionary: "
+                "{}".format(pformat(completed_trs)))
+
+
+
     ########################################################################
     # Helpful local data management + analysis methods
     ########################################################################
@@ -570,7 +657,7 @@ class SCRPCClient(object):
         Payout.__table__.create(self.engine, checkfirst=True)
         self.db.session.commit()
 
-    def _tabulate(self, title, query, headers=None):
+    def _tabulate(self, title, query, headers=None, data=None):
         """ Displays a table of payouts given a query to fetch payouts with, a
         title to label the table, and an optional list of columns to display
         """
@@ -620,7 +707,6 @@ class SCRPCClient(object):
             self.logger.error("Unhandled exception calling {} with {}"
                               .format(command, kwargs), exc_info=True)
             return False
-
 
 def entry():
     parser = argparse.ArgumentParser(prog='simplecoin RPC')
