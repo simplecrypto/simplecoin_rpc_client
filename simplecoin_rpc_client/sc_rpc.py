@@ -500,7 +500,7 @@ class SCRPCClient(object):
         """ Grabs the unconfirmed transactions objects from the remote server
         and checks if they're confirmed. Also grabs and pushes the fees for the
         transaction if remote server supports it. """
-        self.logger.info("Attempting to grab uncofirmed {} transactions from "
+        self.logger.info("Attempting to grab unconfirmed {} transactions from "
                          "SC, poking the RPC...".format(self.config['currency_code']))
         try:
             self.coin_rpc.poke_rpc()
