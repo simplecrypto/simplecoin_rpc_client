@@ -3,6 +3,21 @@ simplecoin_rpc_client
 
 The RPC (mostly payout operations) client for simplecoin.
 
+Installation
+============
+
+Better for dev work/live changes:
+
+```
+pip install -e .
+```
+
+or
+
+```
+python setup.py install
+```
+
 Basic Usage
 ===========
 The basic work flow for payouts should look like this
