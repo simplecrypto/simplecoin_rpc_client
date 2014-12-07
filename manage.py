@@ -1,12 +1,12 @@
 import logging
 import os
 import argparse
+import sys
 import yaml
 
 from cryptokit.rpc_wrapper import CoinRPC
 from simplecoin_rpc_client.sc_rpc import SCRPCClient
 
-logger = logging.getLogger('SCRPCClient')
 os_root = os.path.abspath(os.path.dirname(__file__) + '/../')
 
 
@@ -19,130 +19,50 @@ def entry():
 
     to run the sc_rpc.py get_open_trade_requests function
     """
-
     parser = argparse.ArgumentParser(prog='SimpleCoinMulti RPC client manager')
-    parser.add_argument('-c', '--config', default='/config.yml', type=argparse.FileType('r'))
+    parser.add_argument('-c', '--config', default='config.yml', type=argparse.FileType('r'))
     parser.add_argument('-l', '--log-level',
                         choices=['DEBUG', 'INFO', 'WARN', 'ERROR'])
     parser.add_argument('-s', '--simulate', action='store_true', default=False)
 
     subparsers = parser.add_subparsers(
         help='Sub-command help',
-        choices=['payout', 'trade_request'],
         dest='manager')
 
     # Setup payout parsers
     payout_parser = subparsers.add_parser(
-        'payout',
-        help="Performs payout functions",
-        choices=['pull_payouts', 'payout', 'confirm_trans',
-                 'associate_all', 'reset_all_locked', 'unpaid_locked',
-                 'unpaid_unlocked', 'dump_complete', 'dump_incomplete',
-                 'init_db'],
-        dest='function')
-    payout_subparsers = payout_parser.add_subparsers(
-        help='Payout Sub-command help',
-        dest='function_args')
+        'payout_manager',
+        help="Performs payout functions")
 
     # Setup trade request parser
     trade_parser = subparsers.add_parser(
-        'trade_request',
-        help="Performs trade request functions",
-        choices=['get_open_trade_requests', 'close_trade_request',
-                 'close_sell_requests'],
-        dest='function')
-    trade_subparsers = payout_parser.add_subparsers(
-        help='Trade Sub-command help',
-        dest='function_args')
-
+        'trade_manager',
+        help="Performs trade request functions")
 
     # Main payout functions
     payout_parser.add_argument(
-        'pull_payouts',
-        help="pulls down new payouts that are ready from the server",
-        dest="action")
+        '-f', '--function',
+        choices=['pull_payouts', 'payout', 'confirm_trans',
+                 'associate_all', 'reset_all_locked', 'unpaid_locked',
+                 'unpaid_unlocked', 'dump_complete', 'dump_incomplete',
+                 'local_associate_locked', 'local_associate_all_locked',
+                 'init_db'],
+        help="Payout function to run")
     payout_parser.add_argument(
-        'send_payout',
-        help="pays out all ready payout records")
-    payout_parser.add_parser(
-        'associate_all',
-        help="Associates all unassociated payouts")
-    payout_parser.add_argument(
-        'confirm_trans',
-        help="fetches unconfirmed transactions and tries to confirm them")
-
-    # Payout helper functions
-    payout_parser.add_argument(
-        'reset_all_locked',
-        help="resets all locked payouts")
-    payout_parser.add_argument(
-        'unpaid_locked',
-        help="Prints out a nice display of all incompleted payout records "
-             "which are locked.")
-    payout_parser.add_argument(
-        'unpaid_unlocked',
-        help="Prints out a nice display of all incompleted payout records "
-             "which aren't locked.")
-    payout_parser.add_argument(
-        'dump_complete',
-        help="Prints out a nice display of all completed payout records.")
-    payout_parser.add_argument(
-        'dump_incomplete',
-        help="Prints out a nice display of all ncomplete payout records.")
-    payout_parser.add_argument(
-        'init_db',
-        help="Drops & creates the payout table")
-
-    local_associate_locked = payout_subparsers.add_parser(
-        'local_associate_locked',
-        help="Associate locally locked payouts to an TX id")
-    local_associate_locked.add_argument(
-        'pid',
-        help="Payout id to add txid to")
-    local_associate_locked.add_argument(
-        'txid',
-        help="Transaction id to associate")
-
-    local_associate_all_locked = payout_subparsers.add_parser(
-        'local_associate_all_locked',
-        help="Associates all locally locked payouts to an TX id")
-    local_associate_all_locked.add_argument(
-        'txid',
-        help="Transaction id to associate")
+        '-a', '--function-args',
+        nargs='*',
+        help="Arguments to pass the function")
 
     # Main trade request functions
     trade_parser.add_argument(
-        'get_open_trade_requests',
-        help="Pulls down all open trade requests from the server",
-        dest="action")
-
-    close_trade_request = trade_subparsers.add_parser(
-        'close_trade_request',
-        help="Closes a trade request")
-    close_trade_request.add_argument(
-        'tr_id',
-        help="Trade request id to close")
-    close_trade_request.add_argument(
-        'quantity',
-        help="Quantity received from trade(s). BTC for sells. CURR for buys")
-    close_trade_request.add_argument(
-        'total_fees',
-        help="TX fees & exchange fees associated with making trades. "
-             "BTC for sells. CURR for buys")
-
-    close_sell_requests = trade_parser.add_parser(
-        'close_sell_requests',
-        help="Associates all unassociated payouts")
-    close_sell_requests.add_argument(
-        'tr_ids',
-        nargs='+',
-        help="List (space separated) of sell request ids to close")
-    close_sell_requests.add_argument(
-        'btc_quantity',
-        help="BTC Quantity received from sells.")
-    close_sell_requests.add_argument(
-        'btc_fees',
-        help="TX fees & exchange fees associated with making trades, in BTC")
+        '-f', '--function',
+        choices=['get_open_trade_requests', 'close_trade_request',
+                 'close_sell_requests'],
+        help="Trade request function to run")
+    trade_parser.add_argument(
+        '-a', '--function-args',
+        nargs='*',
+        help="Arguments to pass the function")
 
     args = parser.parse_args()
     config = yaml.load(args.config)
@@ -150,6 +70,14 @@ def entry():
     # Args override config
     if args.log_level:
         config['log_level'] = args.log_level
+
+    # Setup logging
+    logger = logging.getLogger()
+    logger.setLevel(config['log_level'])
+    log_format = logging.Formatter('%(asctime)s [%(name)s] %(funcName)s [%(levelname)s] %(message)s')
+    handler = logging.StreamHandler(stream=sys.stdout)
+    handler.setFormatter(log_format)
+    logger.addHandler(handler)
 
     # Setup our CoinRPCs + SCRPCClients
     coin_rpc = {}
@@ -169,15 +97,25 @@ def entry():
         logger.error("At least one currency must be configured! Exiting...")
         exit(0)
 
-    manager = args.command
+    manager = args.manager
     function_args = args.function_args
+    simulate = args.simulate
 
-    if manager == 'payout':
-        # run the action
-        for currency, sc_rpc in sc_rpc.iteritems():
+    if manager == 'payout_manager':
+        for currency in sc_rpc.iterkeys():
             function = getattr(sc_rpc[currency].payout_manager, args.function)
-            function(*function_args)
-    elif manager == 'trade_request':
-        currency = sc_rpc.itervalues()[0]
-        function = getattr(sc_rpc[currency].payout_manager, args.function)
-        function(*function_args)
+            if function_args:
+                function(*function_args, simulate=simulate)
+            else:
+                function(simulate=simulate)
+
+    elif manager == 'trade_manager':
+        currency = config['currencies'][0]['currency_code']
+        function = getattr(sc_rpc[currency].trade_manager, args.function)
+        if function_args:
+            function(*function_args, simulate=simulate)
+        else:
+            function(simulate=simulate)
+
+if __name__ == "__main__":
+    entry()

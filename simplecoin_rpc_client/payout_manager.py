@@ -1,10 +1,49 @@
 import datetime
+import sqlalchemy as sa
+
 from tabulate import tabulate
 from urllib3.exceptions import ConnectionError
-
+from sqlalchemy.ext.declarative import declarative_base
 from cryptokit.rpc import CoinRPCException
 from cryptokit.base58 import get_bcaddress_version
-from simplecoin_rpc_client.sc_rpc import Payout
+
+
+base = declarative_base()
+
+
+class Payout(base):
+    """ Our single table in the sqlite database. Handles tracking the status of
+    payouts and keeps track of tasks that needs to be retried, etc. """
+    __tablename__ = "payouts"
+    id = sa.Column(sa.Integer, primary_key=True)
+    pid = sa.Column(sa.String, unique=True, nullable=False)
+    user = sa.Column(sa.String, nullable=False)
+    address = sa.Column(sa.String, nullable=False)
+    # SQLlite does not have support for Decimal - use STR instead
+    amount = sa.Column(sa.String, nullable=False)
+    currency_code = sa.Column(sa.String, nullable=False)
+    txid = sa.Column(sa.String)
+    associated = sa.Column(sa.Boolean, default=False, nullable=False)
+    locked = sa.Column(sa.Boolean, default=False, nullable=False)
+
+    # Times
+    lock_time = sa.Column(sa.DateTime)
+    paid_time = sa.Column(sa.DateTime)
+    assoc_time = sa.Column(sa.DateTime)
+    pull_time = sa.Column(sa.DateTime)
+
+    @property
+    def trans_id(self):
+        if self.txid is None:
+            return "NULL"
+        return self.txid
+
+    @property
+    def amount_float(self):
+        return float(self.amount)
+
+    def tabulize(self, columns):
+        return [getattr(self, a) for a in columns]
 
 
 class PayoutManager(object):
@@ -47,7 +86,7 @@ class PayoutManager(object):
             if not get_bcaddress_version(address) in self.config['valid_address_versions']:
                 self.logger.warn("Ignoring payout {} due to invalid address. "
                                  "{} address did not match a valid version {}"
-                                 .format((user, address, amount, pid),
+                                 .format((amount, pid),
                                          self.config['currency_code'],
                                          self.config['valid_address_versions']))
                 invalid += 1

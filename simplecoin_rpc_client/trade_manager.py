@@ -13,6 +13,42 @@ class TradeManager(object):
         self.db = sc_rpc.db
         self.coin_rpc = sc_rpc.coin_rpc
 
+    def update_tr(self, tr_id, quantity, fees, status, simulate=False):
+
+        if simulate:
+            self.logger.info('#'*20 + ' Simulation mode ' + '#'*20)
+
+        completed_trs = {tr_id: {'status': int(status),
+                                 'quantity': str(quantity),
+                                 'fees': str(fees)}}
+        self.logger.info("#"*40)
+        self.logger.info("Preparing to post the following values to server: \n "
+                         "{}".format(pformat(completed_trs)))
+
+        res = raw_input("Does this look correct? [y/n] ")
+        if res != "y":
+            return False
+
+        if not simulate:
+            # Post the dictionary
+            response = self.sc_rpc.post(
+                'update_trade_requests',
+                data={'update': True, 'trs': completed_trs}
+            )
+
+            if 'success' in response:
+                self.logger.info(
+                    "Successfully posted updated trade request to SC!")
+                return True
+            else:
+                self.logger.warn(
+                    "Failed posting request updates! Got the "
+                    "following response: {}".format(pformat(response)))
+                return False
+        else:
+            self.logger.info("Simulating - not posting to server!")
+            return False
+
     def get_open_trade_requests(self):
         """
         Grabs the open trade requests from the server and prints off
@@ -26,8 +62,7 @@ class TradeManager(object):
             return
 
         if not trs:
-            self.logger.info("No trade requests returned from SC..."
-                             .format(self.config['currency_code']))
+            self.logger.info("No trade requests returned from SC...")
 
         # basic checking of input
         try:
@@ -48,23 +83,21 @@ class TradeManager(object):
             tr = [tr_id, currency, quantity, type]
 
             # remove trs not for this currency
-            if currency != self.config['currency_code']:
-                continue
-            elif type == 'sell':
+            if type == 'sell':
                 srs.append(tr)
             elif type == 'buy':
                 brs.append(tr)
 
-        self.logger.info("Got {} {} sell requests from SC"
-                         .format(len(srs), self.config['currency_code']))
-        self.logger.info("Got {} {} buy requests from SC"
-                         .format(len(brs), self.config['currency_code']))
+        self.logger.info("Got {} sell requests from SC"
+                         .format(len(srs)))
+        self.logger.info("Got {} buy requests from SC"
+                         .format(len(brs)))
 
         # Print
         headers = ['tr_id', 'currency', 'quantity', 'type']
-        print("@@ Open {} sell requests @@".format(self.config['currency_code']))
+        print("@@ Open sell requests @@")
         print(tabulate(srs, headers=headers, tablefmt="grid"))
-        print("@@ Open {} buy requests @@".format(self.config['currency_code']))
+        print("@@ Open buy requests @@")
         print(tabulate(brs, headers=headers, tablefmt="grid"))
         return srs, brs
 
@@ -97,7 +130,11 @@ class TradeManager(object):
                 "Simulating - but would have posted the following dictionary: "
                 "{}".format(pformat(completed_trs)))
 
-    def close_sell_requests(self, tr_ids, btc_quantity, btc_fees, simulate=False):
+    def close_sell_requests(self, currency, btc_quantity, btc_fees,
+                            start_tr_id=None, stop_tr_id=None, simulate=False):
+        """
+        Close all open sell requests for a given currency
+        """
 
         btc_quantity = Decimal(btc_quantity)
         btc_fees = Decimal(btc_fees)
@@ -109,24 +146,18 @@ class TradeManager(object):
         srs, _ = self.get_open_trade_requests()
 
         sr_ids = []
-        for sr_id, currency, quantity, type in srs:
-            sr_ids.append(sr_id)
-
-        # Check all trade request ids are 'open' on server
-        for tr_id in tr_ids:
-            if tr_id not in sr_ids:
-                self.logger.warning(
-                    "Trade request id {} was not found in the open sell "
-                    "requests! Aborting...")
-                return
-
-        # Prune the list, do some checking + build a total quantity
         total_quant = 0
-        for sr_id, currency, quantity, type in srs[:]:
-            if sr_id not in tr_ids:
-                srs.remove([sr_id, currency, quantity, type])
+        # Prune the list, do some checking + build a total quantity
+        for sr_id, curr, quantity, type in srs[:]:
+            if curr != currency:
+                srs.remove([sr_id, curr, quantity, type])
+            elif start_tr_id and int(start_tr_id) > int(sr_id):
+                srs.remove([sr_id, curr, quantity, type])
+            elif stop_tr_id and int(stop_tr_id) < int(sr_id):
+                srs.remove([sr_id, curr, quantity, type])
             else:
                 assert type == 'sell'
+                sr_ids.append(sr_id)
                 total_quant += Decimal(quantity)
 
         # Avg

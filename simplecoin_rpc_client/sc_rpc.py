@@ -5,51 +5,11 @@ import datetime
 import requests
 import sqlalchemy as sa
 
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-
 from urlparse import urljoin
 from itsdangerous import TimedSerializer, BadData
-from simplecoin_rpc_client.payout_manager import PayoutManager
+from simplecoin_rpc_client.payout_manager import PayoutManager, Payout
 from simplecoin_rpc_client.trade_manager import TradeManager
-
-
-base = declarative_base()
-
-
-class Payout(base):
-    """ Our single table in the sqlite database. Handles tracking the status of
-    payouts and keeps track of tasks that needs to be retried, etc. """
-    __tablename__ = "payouts"
-    id = sa.Column(sa.Integer, primary_key=True)
-    pid = sa.Column(sa.String, unique=True, nullable=False)
-    user = sa.Column(sa.String, nullable=False)
-    address = sa.Column(sa.String, nullable=False)
-    # SQLlite does not have support for Decimal - use STR instead
-    amount = sa.Column(sa.String, nullable=False)
-    currency_code = sa.Column(sa.String, nullable=False)
-    txid = sa.Column(sa.String)
-    associated = sa.Column(sa.Boolean, default=False, nullable=False)
-    locked = sa.Column(sa.Boolean, default=False, nullable=False)
-
-    # Times
-    lock_time = sa.Column(sa.DateTime)
-    paid_time = sa.Column(sa.DateTime)
-    assoc_time = sa.Column(sa.DateTime)
-    pull_time = sa.Column(sa.DateTime)
-
-    @property
-    def trans_id(self):
-        if self.txid is None:
-            return "NULL"
-        return self.txid
-
-    @property
-    def amount_float(self):
-        return float(self.amount)
-
-    def tabulize(self, columns):
-        return [getattr(self, a) for a in columns]
 
 
 class SCRPCException(Exception):
@@ -91,12 +51,6 @@ class SCRPCClient(object):
 
         # Setup CoinRPC
         self.coin_rpc = CoinRPC
-
-        # Setup Payout Manager
-        self.payout_manager = PayoutManager(self)
-
-        # Setup Trade Manager
-        self.trade_manager = TradeManager(self)
 
         # Setup the sqlite database mapper
         self.engine = sa.create_engine('sqlite:///{}'.format(self.config['database_path']),
@@ -146,6 +100,12 @@ class SCRPCClient(object):
                 self.logger.addHandler(handler)
 
         self.serializer = TimedSerializer(self.config['rpc_signature'])
+
+        # Setup Payout Manager
+        self.payout_manager = PayoutManager(self)
+
+        # Setup Trade Manager
+        self.trade_manager = TradeManager(self)
 
     ########################################################################
     # Helper URL methods
