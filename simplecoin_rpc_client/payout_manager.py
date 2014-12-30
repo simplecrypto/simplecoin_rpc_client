@@ -360,7 +360,14 @@ class PayoutManager(object):
         for sc_obj in res['objects']:
             self.logger.debug("Connecting to coinserv to lookup confirms for {}"
                               .format(sc_obj['txid']))
-            rpc_tx_obj = self.coin_rpc.get_transaction(sc_obj['txid'])
+            try:
+                rpc_tx_obj = self.coin_rpc.get_transaction(sc_obj['txid'])
+            except CoinRPCException as e:
+                self.logger.warn(
+                    "Skipping transaction with id {}, failed looking it up from"
+                    " the {} wallet. Got {}"
+                    .format(sc_obj['txid'], self.config['currency_code'], e))
+                continue
 
             if rpc_tx_obj.confirmations > self.config['min_confirms']:
                 tids.append(sc_obj['txid'])
