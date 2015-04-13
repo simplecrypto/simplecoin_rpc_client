@@ -82,13 +82,13 @@ List trade requests
 python simplecoin_rpc_client/manage.py  -f get_open_trade_requests -cl /config.yml -l DEBUG -c [CURRENCY]
 ```
 
-Close a sell request
+Batch close sell requests
 ```
-python simplecoin_rpc_client/manage.py  -f close_trade_request -cl /config.yml -l DEBUG -a [TR_ID] [BTC_FROM_SALE] [FEES(BTC)] simulate=True -c [CURRENCY]
+python manage.py -l DEBUG trade_manager -f close_sell_requests -a [CURRENCY] [BTC_FROM_SALE] [BTC_FEES] (START_TR_ID) (STOP_TR_ID)
 ```
 
-Close a buy request
+Batch close buy requests
 
 ```
-python simplecoin_rpc_client/manage.py  -f close_trade_request -cl /config.yml -l DEBUG -a [TR_ID] [CUR_BOUGHT] [FEES(CUR)] simulate=True -c [CURRENCY]
+python manage.py -l DEBUG trade_manager -f close_buy_requests -a [CURRENCY] [CURRENCY_FROM_BUY] [CURRENCY_FEES] (START_TR_ID) (STOP_TR_ID)
 ```
