@@ -213,3 +213,88 @@ class TradeManager(object):
                     "following response: {}".format(pformat(response)))
         else:
             self.logger.info("Simulating - not posting to server!")
+
+
+    def close_buy_requests(self, currency, curr_quantity, curr_fees,
+                           start_tr_id=None, stop_tr_id=None, simulate=False):
+        """
+        Close all open buy requests for a given currency
+        """
+
+        curr_quantity = Decimal(curr_quantity)
+        curr_fees = Decimal(curr_fees)
+
+        if simulate:
+            self.logger.info('#'*20 + ' Simulation mode ' + '#'*20)
+
+        # Get values
+        _, brs = self.get_open_trade_requests()
+
+        br_ids = []
+        total_quant = 0
+        # Prune the list, do some checking + build a total quantity
+        for br_id, curr, quantity, type in brs[:]:
+            if curr != currency:
+                brs.remove([br_id, curr, quantity, type])
+            elif start_tr_id and int(start_tr_id) > int(br_id):
+                brs.remove([br_id, curr, quantity, type])
+            elif stop_tr_id and int(stop_tr_id) < int(br_id):
+                brs.remove([br_id, curr, quantity, type])
+            else:
+                assert type == 'buy'
+                br_ids.append(br_id)
+                total_quant += Decimal(quantity)
+
+        # Avg
+        avg_price = total_quant / curr_quantity
+        self.logger.info("Computed average price of {} BTC for all "
+                         "Requests".format(avg_price))
+
+        # build dictionary to post
+        completed_brs = {}
+        for br_id, currency, quantity, type in brs[:]:
+            completed_brs.setdefault(br_id, {})
+
+            self.logger.info("#"*40)
+            self.logger.info("Computing values for BR ID #{} ({} BTC)"
+                             .format(br_id, quantity))
+
+            br_perc = Decimal(quantity) / total_quant
+            br_curr = br_perc * curr_quantity
+            br_fees = br_perc * curr_fees
+            br_avg_price = Decimal(quantity) / br_curr
+
+            self.logger.info("This SR is {}% of the total"
+                             .format(br_perc * 100))
+            self.logger.info("{} total currency".format(br_curr))
+            self.logger.info("{} btc in fees".format(br_fees))
+            self.logger.info("Avg price: {}".format(br_avg_price))
+
+            completed_brs[br_id] = {'status': 6,
+                                    'quantity': str(br_curr),
+                                    'fees': str(br_fees)}
+        self.logger.info("#"*40)
+        self.logger.info("Preparing to post the following values to server: \n "
+                         "{}".format(pformat(completed_brs)))
+
+        res = raw_input("Does this look correct? [y/n] ")
+        if res != "y":
+            return
+
+        if not simulate:
+            # Post the dictionary
+            response = self.sc_rpc.post(
+                'update_trade_requests',
+                data={'update': True, 'trs': completed_brs}
+            )
+
+            if 'success' in response:
+                self.logger.info(
+                    "Successfully posted {} updated trade requests to SC!"
+                    .format(len(completed_brs)))
+            else:
+                self.logger.warn(
+                    "Failed posting request updates! Attempted to post the "
+                    "following response: {}".format(pformat(response)))
+        else:
+            self.logger.info("Simulating - not posting to server!")

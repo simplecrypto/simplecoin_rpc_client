@@ -57,7 +57,7 @@ def entry():
     trade_parser.add_argument(
         '-f', '--function',
         choices=['get_open_trade_requests', 'close_trade_request',
-                 'close_sell_requests'],
+                 'close_sell_requests', 'close_buy_requests'],
         help="Trade request function to run")
     trade_parser.add_argument(
         '-a', '--function-args',
