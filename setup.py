@@ -9,7 +9,7 @@ setup(name='simplecoin_rpc_client',
       entry_points={
           'console_scripts': [
               'simplecoin_rpc_scheduler = simplecoin_rpc_client.scheduler:entry',
-              'simplecoin_rpc = simplecoin_rpc_client.rpc:entry'
+              'simplecoin_rpc = simplecoin_rpc_client.sc_rpc:entry'
           ]
       },
       packages=find_packages()
