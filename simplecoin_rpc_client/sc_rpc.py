@@ -22,6 +22,26 @@ from itsdangerous import TimedSerializer, BadData
 base = declarative_base()
 
 
+@decorator.decorator
+def crontab(func, *args, **kwargs):
+    """ Handles rolling back SQLAlchemy exceptions to prevent breaking the
+    connection for the whole scheduler. Also records timing information into
+    the cache """
+    self = args[0]
+
+    res = None
+    try:
+        res = func(*args, **kwargs)
+    except sqlalchemy.exc.SQLAlchemyError as e:
+        logger.error("SQLAlchemyError occurred, rolling back", exc_info=True)
+        self.db.session.rollback()
+    except Exception:
+        self.logger.error("Unhandled exception in {}".format(func.__name__),
+                          exc_info=True)
+
+    return res
+
+
 class Payout(base):
     """ Our single table in the sqlite database. Handles tracking the status of
     payouts and keeps track of tasks that needs to be retried, etc. """
@@ -178,6 +198,7 @@ class SCRPCClient(object):
     ########################################################################
     # RPC Client methods
     ########################################################################
+    @crontab
     def pull_payouts(self, simulate=False):
         """ Gets all the unpaid payouts from the server """
 
@@ -233,6 +254,7 @@ class SCRPCClient(object):
                          .format(new, self.config['currency_code'], repeat, invalid))
         return True
 
+    @crontab
     def send_payout(self, simulate=False):
         """ Collects all the unpaid payout ids (for the configured currency)
         and pays them out """
@@ -382,6 +404,7 @@ class SCRPCClient(object):
                              .format(len(finalized_payouts), coin_txid))
             return coin_txid, rpc_tx_obj, finalized_payouts
 
+    @crontab
     def associate_all(self, simulate=False):
         """
         Looks at all local Payout objects (of the currency_code) that are paid
@@ -449,6 +472,7 @@ class SCRPCClient(object):
                               "payouts!".format(self.config['currency_code']))
         return False
 
+    @crontab
     def local_associate_locked(self, pid, tx_id, simulate=False):
         """
         Locally associates a payout, with which is both unpaid and
@@ -467,6 +491,7 @@ class SCRPCClient(object):
         self.db.session.commit()
         return True
 
+    @crontab
     def local_associate_all_locked(self, tx_id, simulate=False):
         """
         Locally associates payouts for this _currency_ which are both unpaid and
@@ -496,6 +521,7 @@ class SCRPCClient(object):
         self.db.session.commit()
         return True
 
+    @crontab
     def confirm_trans(self, simulate=False):
         """ Grabs the unconfirmed transactions objects from the remote server
         and checks if they're confirmed. Also grabs and pushes the fees for the
@@ -552,6 +578,7 @@ class SCRPCClient(object):
             self.logger.error("Failed to push confirmation information")
             return False
 
+    @crontab
     def get_open_trade_requests(self):
         """
         Grabs the open trade requests from the server and prints off
@@ -607,6 +634,7 @@ class SCRPCClient(object):
         print("@@ Open {} buy requests @@".format(self.config['currency_code']))
         print(tabulate(brs, headers=headers, tablefmt="grid"))
 
+    @crontab
     def close_trade_request(self, tr_id, quantity, total_fees, simulate=False):
 
         if simulate:
@@ -641,6 +669,7 @@ class SCRPCClient(object):
     ########################################################################
     # Helpful local data management + analysis methods
     ########################################################################
+    @crontab
     def reset_all_locked(self, simulate=False):
         """ Resets all locked payouts """
         payouts = self.db.session.query(Payout).filter_by(locked=True)
@@ -652,6 +681,7 @@ class SCRPCClient(object):
         payouts.update({Payout.locked: False})
         self.db.session.commit()
 
+    @crontab
     def init_db(self, simulate=False):
         """ Deletes all data from DB and rebuilds tables. Use carefully... """
         Payout.__table__.drop(self.engine, checkfirst=True)

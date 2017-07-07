@@ -14,26 +14,6 @@ logger = logging.getLogger('apscheduler.scheduler')
 os_root = os.path.abspath(os.path.dirname(__file__) + '/../')
 
 
-@decorator.decorator
-def crontab(func, *args, **kwargs):
-    """ Handles rolling back SQLAlchemy exceptions to prevent breaking the
-    connection for the whole scheduler. Also records timing information into
-    the cache """
-    self = args[0]
-
-    res = None
-    try:
-        res = func(*args, **kwargs)
-    except sqlalchemy.exc.SQLAlchemyError as e:
-        logger.error("SQLAlchemyError occurred, rolling back: {}".format(e))
-        self.db.session.rollback()
-    except Exception:
-        self.logger.error("Unhandled exception in {}".format(func.__name__),
-                          exc_info=True)
-
-    return res
-
-
 class PayoutManager(object):
 
     def __init__(self, logger, sc_rpc, coin_rpc):
@@ -41,12 +21,10 @@ class PayoutManager(object):
         self.sc_rpc = sc_rpc
         self.coin_rpc = coin_rpc
 
-    @crontab
     def pull_payouts(self):
         for currency, sc_rpc in self.sc_rpc.iteritems():
             sc_rpc.pull_payouts()
 
-    @crontab
     def send_payout(self):
         for currency, sc_rpc in self.sc_rpc.iteritems():
 
@@ -61,27 +39,22 @@ class PayoutManager(object):
             # Push completed payouts to SC
             sc_rpc.associate(coin_txid, payouts, tx.fee)
 
-    @crontab
     def associate_all_payouts(self):
         for currency, sc_rpc in self.sc_rpc.iteritems():
             sc_rpc.associate_all()
 
-    @crontab
     def confirm_payouts(self):
         for currency, sc_rpc in self.sc_rpc.iteritems():
             sc_rpc.confirm_trans()
 
-    @crontab
     def init_db(self):
         for currency, sc_rpc in self.sc_rpc.iteritems():
             sc_rpc.init_db()
 
-    @crontab
     def dump_incomplete(self):
         for currency, sc_rpc in self.sc_rpc.iteritems():
             sc_rpc.dump_incomplete()
 
-    @crontab
     def dump_complete(self):
         for currency, sc_rpc in self.sc_rpc.iteritems():
             sc_rpc.dump_complete()
