@@ -1,6 +1,5 @@
 import logging
 import os
-import decorator
 import sqlalchemy
 import setproctitle
 import argparse

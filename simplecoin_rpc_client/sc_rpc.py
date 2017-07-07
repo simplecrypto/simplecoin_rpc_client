@@ -7,6 +7,7 @@ import argparse
 import datetime
 import requests
 import sqlalchemy as sa
+import decorator
 
 from cryptokit.rpc import CoinRPCException
 from urllib3.exceptions import ConnectionError
@@ -32,8 +33,8 @@ def crontab(func, *args, **kwargs):
     res = None
     try:
         res = func(*args, **kwargs)
-    except sqlalchemy.exc.SQLAlchemyError as e:
-        logger.error("SQLAlchemyError occurred, rolling back", exc_info=True)
+    except sa.exc.SQLAlchemyError:
+        self.logger.error("SQLAlchemyError occurred, rolling back", exc_info=True)
         self.db.session.rollback()
     except Exception:
         self.logger.error("Unhandled exception in {}".format(func.__name__),
