@@ -256,7 +256,7 @@ class SCRPCClient(object):
         return True
 
     @crontab
-    def send_payout(self, simulate=False):
+    def send_payout(self, simulate=False, payout_output_limit=10000):
         """ Collects all the unpaid payout ids (for the configured currency)
         and pays them out """
         if simulate:
@@ -296,13 +296,12 @@ class SCRPCClient(object):
             payout.locked = True
             payout.lock_time = datetime.datetime.utcnow()
 
-        for address, amount in address_payout_amounts.items():
+        for i, (address, amount) in enumerate(address_payout_amounts.items()):
             # Convert amount from STR and coerce to a payable value.
             # Note that we're not trying to validate the amount here, all
             # validation should be handled server side.
             amount = round(float(amount), 8)
-
-            if amount < self.config['minimum_tx_output']:
+            if amount < self.config['minimum_tx_output'] or i > payout_output_limit:
                 # We're unable to pay, so undo the changes from the last loop
                 self.logger.warn('Removing {} with payout amount of {} (which '
                                  'is lower than network output min of {}) from '
