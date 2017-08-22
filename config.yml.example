@@ -24,4 +24,6 @@ currencies:
       # Pay an optional fee (Per KB). Functions as a minimum
       tx_fee: 0.00000000
       # Avoid attempting to send amounts smaller than network min
-      minimum_tx_output: 0.00000001
+      # This amount is a network constant CTransaction::nMinRelayTxFee. Outputs
+      # less that this amount are not allowed to avoid generation of dust.
+      minimum_tx_output: 0.00001000
