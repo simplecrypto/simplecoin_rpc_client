@@ -2,6 +2,7 @@ import logging
 import os
 import argparse
 import yaml
+import sys
 
 from cryptokit.rpc_wrapper import CoinRPC
 from simplecoin_rpc_client.sc_rpc import SCRPCClient
@@ -35,7 +36,7 @@ def entry():
 
     # Setup logging
     root = logging.getLogger()
-    hdlr = logging.StreamHandler()
+    hdlr = logging.StreamHandler(stream=sys.stdout)
     formatter = logging.Formatter('%(asctime)s [%(name)s] [%(levelname)s] %(message)s')
     hdlr.setFormatter(formatter)
     root.addHandler(hdlr)
